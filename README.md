@@ -80,12 +80,12 @@ We have strictly adhered to the "Build With AI" mandate to transition from Chat 
    ```
 
 3. **Backend Setup (Python/FastAPI):**
-   ```bash
+   ```powershell
    cd backend
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
    pip install -r requirements.txt
-   uvicorn main:app --reload
+   uvicorn app.main:app --reload
    ```
 
 4. **Environment Variables:**

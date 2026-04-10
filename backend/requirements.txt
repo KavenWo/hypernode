@@ -1,0 +1,5 @@
+fastapi[standard]>=0.110.0
+pydantic>=2.7.0
+genkit>=0.1.0  
+genkit-plugin-google-genai>=0.1.0
+firebase-admin>=6.5.0
