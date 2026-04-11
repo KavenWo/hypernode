@@ -13,8 +13,8 @@ Anomaly detection uses a threshold + rate-of-change approach:
 3. Compound assessment   → multiple borderline signs = escalate
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, BackgroundTasks # type: ignore
+from pydantic import BaseModel, Field # type: ignore
 from typing import Optional
 from datetime import datetime, timedelta
 from enum import Enum
