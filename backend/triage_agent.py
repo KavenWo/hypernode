@@ -27,9 +27,9 @@ Usage:
 
 import os
 import json
-import httpx
+import httpx # type: ignore
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field # type: ignore
 from typing import Optional
 from enum import Enum
 
