@@ -1,371 +1,271 @@
-# 🤖 AI Agents Architecture Guide
+# AI Agents Architecture Guide
 
-This document explains how the AI agents system is structured, what each file is responsible for, and how everything connects together.
+This document explains how the backend agent system is structured, what each area is responsible for, and how it should merge into the broader backend.
 
-This is the **core intelligence layer** of the project.
+This is the core intelligence layer of the project.
 
 ---
 
-# 🧠 Overall Concept
+# Overall Concept
 
-Our system is designed as an **Agentic AI workflow**:
+Our system is designed as an agentic backend workflow:
 
-1. Detect event (e.g. fall)
+1. Detect event
 2. Analyze situation
 3. Decide severity
-4. Trigger actions
-5. Provide guidance
+4. Decide response
+5. Trigger execution and guidance
 
-Each step is handled by a **separate agent**, coordinated through an orchestrator.
-
----
-
-# 📁 Folder Structure
-
-```
-agents/
-  genkit.config.ts
-  prompts.ts
-  schemas.ts
-  tools.ts
-  orchestrator.ts
-
-  sentinel/
-    vital_agent.ts
-    vision_agent.ts
-
-  reasoning/
-    clinical_agent.ts
-
-  coordinator/
-    dispatcher_agent.ts
-
-  bystander/
-    rag_agent.ts
-    audio_stream.ts
-```
+Each step is handled by a dedicated agent role, coordinated through one orchestrator.
 
 ---
 
-# 🧩 Core Files (Shared)
+# Folder Structure
 
-## 1. genkit.config.ts
+```text
+backend/
+  app/
+    main.py
 
-### Purpose:
+  agents/
+    orchestrator.py
 
-Initializes connection to Google AI (Gemini) and Genkit.
+    shared/
+      config.py
+      schemas.py
 
-### Responsibilities:
+    sentinel/
+      vision_agent.py
+      vital_agent.py
+      prompts.py
 
-* Setup model (Gemini Flash / Pro)
-* Configure environment
-* Export model instance for agents
+    reasoning/
+      clinical_agent.py
+      prompts.py
 
----
+    coordinator/
+      dispatcher_agent.py
+      prompts.py
 
-## 2. schemas.ts
+    bystander/
+      rag_agent.py
+      prompts.py
 
-### Purpose:
+    execution/
+      emergency_actions.py
 
-Defines all data structures used across the system.
+  db/
+    firebase_client.py
+    models.py
 
-### Why important:
-
-Ensures frontend, backend, and agents all use the same format.
-
-### Examples:
-
-* UserProfile
-* FallEvent
-* ClinicalAssessment
-* DispatchDecision
-* BystanderInstruction
-
----
-
-## 3. prompts.ts
-
-### Purpose:
-
-Stores all AI prompts in one place.
-
-### Why:
-
-* Keeps agent files clean
-* Easier to update prompts
-* Reusable across agents
-
-### Examples:
-
-* Clinical reasoning prompt
-* Fall severity classification
-* Bystander instructions
-
----
-
-## 4. tools.ts
-
-### Purpose:
-
-Defines helper functions used by agents.
-
-### Examples:
-
-* Fetch user profile
-* Send alert to family
-* Trigger emergency dispatch
-* Retrieve protocol
-
-### Note:
-
-Start with **mock functions first**.
-
----
-
-## 5. orchestrator.ts
-
-### Purpose:
-
-Controls the full AI workflow.
-
-### Responsibilities:
-
-* Calls agents in correct order
-* Handles decision flow
-* Manages escalation logic
-
-### Example flow:
-
-```
-Fall detected
-→ Vision Agent
-→ Clinical Agent
-→ Dispatcher Agent
-→ Bystander Agent
+  data/
+    sample_patient.json
+    medical_guidance_fallback.json
 ```
 
 ---
 
-# 🤖 Agent Files
+# Shared Files
+
+## `agents/shared/config.py`
+
+Purpose:
+
+- Configures Gemini client access
+- Defines model defaults and fallbacks
+- Keeps API-key wiring out of agent logic
+
+## `db/firebase_client.py`
+
+Purpose:
+
+- Loads patient state from Firestore
+- Seeds one sample patient for testing
+- Falls back to local test data while cloud setup is incomplete
+
+## `agents/shared/schemas.py`
+
+Purpose:
+
+- Defines shared Pydantic contracts used by all agents and routes
+
+Examples:
+
+- `FallEvent`
+- `VisionAssessment`
+- `ClinicalAssessment`
+- `DispatchDecision`
+- `BystanderInstruction`
+
+## `agents/orchestrator.py`
+
+Purpose:
+
+- Controls the full workflow
+- Calls agents in sequence
+- Decides when to invoke execution helpers
+- Keeps end-to-end flow logic in one place
 
 ---
 
-## 🟢 Sentinel Layer (Detection)
+# Agent Responsibilities
 
-### vision_agent.ts
+## Sentinel Layer
 
-#### Purpose:
+### `agents/sentinel/vision_agent.py`
 
-Detect whether a fall likely occurred.
+Purpose:
 
-#### Input:
+- Interprets the incoming fall signal
+- Produces an initial severity hint
 
-* FallEvent (mocked or real)
+Question it answers:
 
-#### Output:
+- "Did a fall likely happen?"
 
+### `agents/sentinel/vital_agent.py`
+
+Purpose:
+
+- Interprets optional vital-sign input
+- Produces an anomaly/risk hint
+
+Question it answers:
+
+- "Do vitals increase urgency?"
+
+---
+
+## Reasoning Layer
+
+### `agents/reasoning/clinical_agent.py`
+
+Purpose:
+
+- Uses Gemini to produce the main clinical assessment
+- Combines event input, patient profile, and grounded emergency knowledge
+
+Question it answers:
+
+- "How serious is this event?"
+
+### `agents/reasoning/prompts.py`
+
+Purpose:
+
+- Stores prompt-building logic for the clinical agent
+
+---
+
+## Coordinator Layer
+
+### `agents/coordinator/dispatcher_agent.py`
+
+Purpose:
+
+- Converts the assessment into a structured response decision
+
+Question it answers:
+
+- "What should the system do next?"
+
+### `agents/coordinator/prompts.py`
+
+Purpose:
+
+- Stores prompt-building logic for the dispatcher agent
+
+---
+
+## Bystander Layer
+
+### `agents/bystander/rag_agent.py`
+
+Purpose:
+
+- Produces helper instructions for nearby people
+- Retrieves grounded medical guidance from Vertex AI Search when configured
+- Falls back to local emergency guidance while cloud setup is incomplete
+
+Question it answers:
+
+- "What should people nearby do right now?"
+
+---
+
+# Execution Boundary
+
+## `agents/execution/emergency_actions.py`
+
+Purpose:
+
+- Holds mock side-effect functions during agent development
+- Represents the handoff point into real backend integrations
+
+Examples:
+
+- Twilio call trigger
+- Nearest hospital lookup
+- Ambulance dispatch helper
+
+Important:
+
+- This is not long-term agent logic
+- When merged with the backend member's work, these functions should point to modules in:
+  - `backend/integrations/twilio_caller.py`
+  - `backend/integrations/maps_router.py`
+  - `backend/integrations/hospital_webhook.py`
+
+So the design principle is:
+
+- `agents` decide
+- `integrations` execute
+
+---
+
+# Merge Strategy
+
+The intended merged backend structure should look like:
+
+```text
+backend/
+  main.py
+  routers/
+  integrations/
+  db/
+  agents/
 ```
-{
-  "fallDetected": true,
-  "confidence": 0.92,
-  "motionState": "no_movement"
-}
-```
+
+In that final structure:
+
+- `routers/` handles frontend or device requests
+- `agents/` handles reasoning and orchestration
+- `integrations/` handles Twilio, Maps, hospital webhooks, and other external calls
+- `db/` handles Firebase and persistence
+- `Vertex AI Search` handles factual medical guidance retrieval
 
 ---
 
-### vital_agent.ts
+# MVP Goal
 
-#### Purpose:
+A working backend pipeline that:
 
-Detect abnormal vitals (optional for MVP)
-
-#### Input:
-
-* Heart rate, SpO2, etc.
-
-#### Output:
-
-* anomaly detected or not
+- accepts a fall event
+- classifies severity
+- decides what action to take
+- can trigger execution helpers
+- can generate bystander guidance
 
 ---
 
-## 🧠 Reasoning Layer
+# Key Design Principle
 
-### clinical_agent.ts
+Each agent should answer one question:
 
-#### Purpose:
+- Vision Agent: "Did a fall happen?"
+- Vital Agent: "Do the vitals make this worse?"
+- Clinical Agent: "How serious is it?"
+- Dispatcher Agent: "What should we do?"
+- Bystander Agent: "What should nearby people do?"
 
-Decide how serious the situation is.
-
-#### Input:
-
-* User profile
-* Fall event
-* (optional) vitals
-
-#### Output:
-
-```
-{
-  "severity": "high",
-  "recommendedAction": "emergency_dispatch"
-}
-```
-
-#### Notes:
-
-* This is the **main intelligence agent**
-* Uses Gemini model
-
----
-
-## 🚑 Coordinator Layer
-
-### dispatcher_agent.ts
-
-#### Purpose:
-
-Convert reasoning result into actions.
-
-#### Responsibilities:
-
-* Decide what to do next:
-
-  * Do nothing
-  * Notify family
-  * Call emergency
-  * Trigger guidance
-
-#### Output:
-
-```
-{
-  "callEmergency": true,
-  "callFamily": true
-}
-```
-
----
-
-## 🧍 Bystander Layer
-
-### rag_agent.ts
-
-#### Purpose:
-
-Provide grounded instructions.
-
-#### Input:
-
-* Scenario type (e.g. fall)
-
-#### Output:
-
-* Step-by-step instructions
-
----
-
-### audio_stream.ts
-
-#### Purpose:
-
-Convert instructions into readable or spoken format.
-
-#### Example:
-
-* Combine steps into natural speech
-
----
-
-# 🔗 How Everything Connects
-
-## Full Flow:
-
-```
-Input Event (Fall)
-↓
-Vision Agent
-↓
-Clinical Agent
-↓
-Dispatcher Agent
-↓
-Bystander Agent
-↓
-Final Output (Actions + Instructions)
-```
-
----
-
-## Example Execution:
-
-```
-Fall detected
-→ Vision confirms fall
-→ Clinical agent says HIGH risk
-→ Dispatcher triggers emergency
-→ RAG agent provides instructions
-```
-
----
-
-# 🧪 Development Approach
-
-## Phase 1 (NOW)
-
-* Define schemas
-* Create mock inputs
-* Build agent structure
-* Use fake data
-
-## Phase 2
-
-* Integrate Gemini (AI Studio / API)
-* Replace mock logic with AI reasoning
-
-## Phase 3
-
-* Add real tools (Twilio, Maps)
-* Add RAG (Vertex AI Search)
-
----
-
-# ⚠️ Important Notes
-
-* Do NOT build everything at once
-* Start with **mock data**
-* Ensure all agents return **structured JSON**
-* Keep logic simple first
-
----
-
-# 🎯 MVP Goal
-
-A working pipeline that:
-
-* Accepts a fall event
-* Classifies severity
-* Decides action
-* Outputs instructions
-
----
-
-# 🧠 Key Design Principle
-
-Each agent should answer ONE question:
-
-* Vision Agent → "Did a fall happen?"
-* Clinical Agent → "How serious is it?"
-* Dispatcher → "What should we do?"
-* RAG Agent → "What should people do?"
-
----
-
-# 🚀 Final Goal
-
-A fully connected system where:
-
-* AI makes decisions
-* System executes actions
-* Users receive real-time guidance
+The orchestrator combines those answers into one backend-controlled flow.

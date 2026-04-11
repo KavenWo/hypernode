@@ -82,14 +82,12 @@ We have strictly adhered to the "Build With AI" mandate to transition from Chat 
 3. **Backend Setup (Python/FastAPI):**
    ```powershell
    cd backend
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   uvicorn app.main:app --reload
+   uv sync
+   uv run uvicorn app.main:app --reload
    ```
 
 4. **Environment Variables:**
-   Create a `.env` file in the backend directory and populate your Google Cloud Credentials, Twilio SID, Google Maps Keys, and Firebase configurations.
+   Create a `.env` file in the backend directory and populate `GEMINI_API_KEY`. The backend also accepts the older `GOOGLE_GENAI_API_KEY` name for backward compatibility.
 
 ## 📜 License
 This project is open-source and submitted for the MyAI Future Hackathon 2026.
