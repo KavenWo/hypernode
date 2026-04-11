@@ -1,0 +1,69 @@
+{
+  "default_profile": {
+    "user_id": "user_001",
+    "full_name": "Amina Rahman",
+    "age": 78,
+    "pre_existing_conditions": [
+      "Hypertension",
+      "Osteoporosis",
+      "History of prior fall"
+    ],
+    "medications": [
+      "Amlodipine",
+      "Warfarin"
+    ],
+    "allergies": [
+      "Penicillin"
+    ],
+    "emergency_contacts": [
+      "+60123456789",
+      "+60199887766"
+    ],
+    "blood_thinners": true,
+    "mobility_support": true,
+    "primary_language": "en",
+    "address": "Kuala Lumpur, Malaysia"
+  },
+  "profiles": [
+    {
+      "user_id": "user_001",
+      "full_name": "Amina Rahman",
+      "age": 78,
+      "pre_existing_conditions": [
+        "Hypertension",
+        "Osteoporosis",
+        "History of prior fall"
+      ],
+      "medications": [
+        "Amlodipine",
+        "Warfarin"
+      ],
+      "allergies": [
+        "Penicillin"
+      ],
+      "emergency_contacts": [
+        "+60123456789",
+        "+60199887766"
+      ],
+      "blood_thinners": true,
+      "mobility_support": true,
+      "primary_language": "en",
+      "address": "Kuala Lumpur, Malaysia"
+    },
+    {
+      "user_id": "user_healthy_001",
+      "full_name": "Daniel Tan",
+      "age": 34,
+      "pre_existing_conditions": [],
+      "medications": [],
+      "allergies": [],
+      "emergency_contacts": [
+        "+60112233445"
+      ],
+      "blood_thinners": false,
+      "mobility_support": false,
+      "primary_language": "en",
+      "address": "Petaling Jaya, Malaysia"
+    }
+  ]
+}
