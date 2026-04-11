@@ -49,8 +49,12 @@ def _query_vertex_ai_search(query: str, max_results: int) -> list[str]:
             page_size=max_results,
         )
         response = client.search(request=request)
-    except Exception:  # pragma: no cover - network/auth depends on runtime environment
-        logger.exception("Vertex AI Search request failed for serving config %s", serving_config)
+    except Exception as exc:  # pragma: no cover - network/auth depends on runtime environment
+        logger.warning(
+            "Vertex AI Search request failed for serving config %s: %s",
+            serving_config,
+            exc,
+        )
         return []
 
     snippets: list[str] = []
