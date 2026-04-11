@@ -1,0 +1,16 @@
+[project]
+name = "hypernode-backend"
+version = "0.1.0"
+description = "Backend agent workflow for the Project 2030 prototype."
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi[standard]>=0.110,<1.0",
+  "google-cloud-discoveryengine>=0.13,<1.0",
+  "google-cloud-firestore>=2.16,<3.0",
+  "pydantic>=2.7,<3.0",
+  "python-dotenv>=1.0,<2.0",
+  "google-genai>=1.46,<2.0",
+]
+
+[tool.uv]
+package = false
