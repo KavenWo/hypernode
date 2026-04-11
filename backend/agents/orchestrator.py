@@ -1,7 +1,16 @@
-"""Orchestrator: coordinates all agents in sequence and bridges their decisions to execution steps."""
+"""Compatibility wrapper for older agent imports.
+
+The backend now centralizes the MVP path in ``app.services.mvp_flow`` so the
+API, tests, and future frontend integration all share one understandable flow.
+This module remains available because older scripts in the repo still import it.
+"""
 
 import json
 
+from app.services.mvp_flow import (
+    get_mvp_fall_questions,
+    run_mvp_fall_assessment as run_shared_mvp_fall_assessment,
+)
 from agents.bystander.knowledge_base import retrieve_medical_guidance
 from agents.bystander.rag_agent import retrieve_first_aid_instructions
 from agents.coordinator.dispatcher_agent import decide_dispatch
@@ -10,89 +19,28 @@ from agents.reasoning.clinical_agent import assess_clinical_severity
 from agents.sentinel.vital_agent import inspect_vitals
 from agents.sentinel.vision_agent import inspect_fall_event
 from agents.shared.config import get_genai_client
-from agents.shared.schemas import (
-    DispatchDecision,
-    FallEvent,
-    MvpAssessment,
-    PatientAnswer,
-    TriageQuestionSet,
-    UserMedicalProfile,
-    VitalSigns,
-)
-from agents.triage.question_agent import generate_triage_questions
-from db.firebase_client import load_patient_profile
-
-
-def _load_user_profile(user_id: str) -> UserMedicalProfile:
-    return UserMedicalProfile.model_validate(load_patient_profile(user_id).model_dump())
-
-
-def _build_guidance_query(
-    *,
-    patient_profile: UserMedicalProfile,
-    patient_answers: list[PatientAnswer],
-) -> str:
-    answer_text = " ".join(answer.answer.lower() for answer in patient_answers)
-
-    if "not breathing" in answer_text or "cpr" in answer_text:
-        return "cpr first aid guidance for elderly fall patient"
-    if (
-        patient_profile.blood_thinners
-        or "head" in answer_text
-        or "bleeding" in answer_text
-        or "confusion" in answer_text
-        or "unconscious" in answer_text
-    ):
-        return "fall red flags for elderly patient on blood thinners"
-    return "fall first aid guidance for elderly patient"
+from agents.shared.schemas import DispatchDecision, FallEvent, MvpAssessment, VitalSigns
+from app.services.mvp_flow import load_user_profile
 
 
 def get_fall_triage_questions(
     event: FallEvent,
     vitals: VitalSigns | None = None,
-) -> TriageQuestionSet:
-    patient_profile = _load_user_profile(event.user_id)
-    return generate_triage_questions(
-        event=event,
-        patient_profile=patient_profile,
-        vitals=vitals,
-    )
+):
+    """Return the centralized 2-3 triage questions for the MVP intake step."""
+    return get_mvp_fall_questions(event, vitals)
 
 
 async def run_mvp_fall_assessment(
     event: FallEvent,
     vitals: VitalSigns | None = None,
-    patient_answers: list[PatientAnswer] | None = None,
+    patient_answers: list | None = None,
 ) -> MvpAssessment:
-    print(f"Running MVP fall assessment for User: {event.user_id} with Confidence {event.confidence_score}")
-
-    client = get_genai_client()
-    patient_profile = _load_user_profile(event.user_id)
-    vision_assessment = await inspect_fall_event(event)
-    vital_assessment = await inspect_vitals(vitals)
-    answers = patient_answers or []
-    grounded_medical_guidance = retrieve_medical_guidance(
-        _build_guidance_query(
-            patient_profile=patient_profile,
-            patient_answers=answers,
-        )
-    )
-    clinical_assessment = await assess_clinical_severity(
-        client=client,
+    """Run the shared single-pass fall assessment flow."""
+    return await run_shared_mvp_fall_assessment(
         event=event,
-        patient_profile=patient_profile,
-        vision_assessment=vision_assessment,
-        vital_assessment=vital_assessment,
-        grounded_medical_guidance=grounded_medical_guidance,
-        patient_answers=answers,
-    )
-
-    instructions = retrieve_first_aid_instructions("fall").steps
-    return MvpAssessment(
-        severity=clinical_assessment.severity,
-        action=clinical_assessment.recommended_action,
-        instructions=instructions,
-        reasoning=clinical_assessment.reasoning,
+        vitals=vitals,
+        patient_answers=patient_answers,
     )
 
 
@@ -100,10 +48,11 @@ async def vital_signs_emergency_workflow(
     event: FallEvent,
     vitals: VitalSigns | None = None,
 ) -> DispatchDecision:
+    """Legacy direct-dispatch workflow kept for older experiments and demos."""
     print(f"Received Fall Event for User: {event.user_id} with Confidence {event.confidence_score}")
 
     client = get_genai_client()
-    patient_profile = _load_user_profile(event.user_id)
+    patient_profile = load_user_profile(event.user_id)
     vision_assessment = await inspect_fall_event(event)
     vital_assessment = await inspect_vitals(vitals)
     grounded_medical_guidance = retrieve_medical_guidance(

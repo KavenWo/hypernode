@@ -10,7 +10,7 @@ from google.auth import default as google_auth_default
 from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import discoveryengine_v1 as discoveryengine
 
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(BACKEND_DIR / ".env")
 
 
@@ -21,9 +21,38 @@ def _build_serving_config(project_id: str, location: str, engine_id: str) -> str
     )
 
 
+def _to_plain_value(value):
+    if isinstance(value, dict):
+        return {key: _to_plain_value(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_to_plain_value(item) for item in value]
+    if hasattr(value, "items"):
+        try:
+            return {key: _to_plain_value(inner) for key, inner in value.items()}
+        except Exception:
+            pass
+    return value
+
+
+def _as_plain_mapping(value) -> dict:
+    plain = _to_plain_value(value or {})
+    return plain if isinstance(plain, dict) else {}
+
+
+def _as_plain_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [_to_plain_value(item) for item in value]
+    try:
+        return [_to_plain_value(item) for item in list(value)]
+    except Exception:
+        return []
+
+
 def _pick_display_title(document: object) -> str | None:
-    struct_data = getattr(document, "struct_data", None) or {}
-    derived_struct_data = getattr(document, "derived_struct_data", None) or {}
+    struct_data = _as_plain_mapping(getattr(document, "struct_data", None))
+    derived_struct_data = _as_plain_mapping(getattr(document, "derived_struct_data", None))
 
     candidate_fields = [
         "title",
@@ -55,8 +84,8 @@ def _pick_display_title(document: object) -> str | None:
 
 
 def _print_source_metadata(document: object) -> None:
-    struct_data = getattr(document, "struct_data", None) or {}
-    derived_struct_data = getattr(document, "derived_struct_data", None) or {}
+    struct_data = _as_plain_mapping(getattr(document, "struct_data", None))
+    derived_struct_data = _as_plain_mapping(getattr(document, "derived_struct_data", None))
 
     source_fields = [
         "uri",
@@ -143,6 +172,15 @@ def main() -> int:
             serving_config=serving_config,
             query=query,
             page_size=3,
+            content_search_spec=discoveryengine.SearchRequest.ContentSearchSpec(
+                snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
+                    return_snippet=True,
+                ),
+                extractive_content_spec=discoveryengine.SearchRequest.ContentSearchSpec.ExtractiveContentSpec(
+                    max_extractive_answer_count=1,
+                    max_extractive_segment_count=3,
+                ),
+            ),
         )
         response = client.search(request=request)
     except Exception as exc:
@@ -168,15 +206,33 @@ def main() -> int:
         print(f"Document Name: {getattr(document, 'name', '<none>')}")
         _print_source_metadata(document)
 
-        derived_struct_data = getattr(document, "derived_struct_data", None) or {}
-        extractive_segments = derived_struct_data.get("extractive_segments", [])
+        derived_struct_data = _as_plain_mapping(getattr(document, "derived_struct_data", None))
+        extractive_segments = _as_plain_list(derived_struct_data.get("extractive_segments"))
+        extractive_answers = _as_plain_list(derived_struct_data.get("extractive_answers"))
+        snippets = _as_plain_list(derived_struct_data.get("snippets"))
+
+        if extractive_answers:
+            for answer_index, answer in enumerate(extractive_answers[:2], start=1):
+                answer_map = _as_plain_mapping(answer)
+                content = str(answer_map.get("content", "")).strip()
+                page_number = answer_map.get("pageNumber") or answer_map.get("page_number")
+                if content:
+                    suffix = f" (page {page_number})" if page_number else ""
+                    print(f"Extractive Answer {answer_index}{suffix}: {content[:400]}")
         if extractive_segments:
             for segment_index, segment in enumerate(extractive_segments[:2], start=1):
-                content = segment.get("content", "").strip()
+                segment_map = _as_plain_mapping(segment)
+                content = str(segment_map.get("content", "")).strip()
                 if content:
                     print(f"Segment {segment_index}: {content[:400]}")
+        if snippets:
+            for snippet_index, snippet in enumerate(snippets[:2], start=1):
+                snippet_map = _as_plain_mapping(snippet)
+                snippet_text = str(snippet_map.get("snippet", "")).strip()
+                if snippet_text:
+                    print(f"Snippet {snippet_index}: {snippet_text[:400]}")
         elif getattr(document, "struct_data", None):
-            print(f"Struct data: {document.struct_data}")
+            print(f"Struct data: {_as_plain_mapping(getattr(document, 'struct_data', None))}")
         else:
             print("No extractive segment or struct data in this result.")
 
