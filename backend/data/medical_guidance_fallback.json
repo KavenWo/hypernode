@@ -1,0 +1,18 @@
+{
+  "fall_red_flags": [
+    "Loss of consciousness after a fall is an emergency red flag.",
+    "Patients on blood thinners with headache or head impact should be treated as high risk.",
+    "Difficulty breathing, severe bleeding, or inability to move after a fall requires urgent escalation."
+  ],
+  "first_aid_fall": [
+    "Check responsiveness and normal breathing.",
+    "Do not move the person if spinal injury is suspected unless there is immediate danger.",
+    "Control visible bleeding with firm pressure if safe to do so.",
+    "Call emergency services if the person is unconscious, confused, bleeding heavily, or in severe pain."
+  ],
+  "cpr": [
+    "If the person is not breathing normally and unresponsive, begin hands-only CPR.",
+    "Push hard and fast in the center of the chest at about 100 to 120 compressions per minute.",
+    "Continue until emergency services arrive or the person resumes normal breathing."
+  ]
+}
