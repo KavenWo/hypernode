@@ -16,6 +16,7 @@ uv run uvicorn app.main:app --reload
 cd backend
 uv run test_phase1.py
 uv run test_agent.py
+uv run test_mvp_flow.py
 ```
 
 ## Seed Firestore
@@ -45,6 +46,20 @@ If those are not configured yet, the backend falls back to `data/medical_guidanc
 You can verify the live app connection with:
 
 `.\.venv\Scripts\python.exe test_vertex_search.py "fall first aid guidance"`
+
+## MVP Flow
+
+The backend now supports the MVP loop as two steps:
+
+- `POST /api/v1/events/fall/questions` with `event` and optional `vitals`
+- `POST /api/v1/events/fall/assess` with `event`, optional `vitals`, and collected `patient_answers`
+
+The assessment endpoint returns:
+
+- `severity`
+- `action`
+- `instructions`
+- `reasoning`
 
 ## Files
 

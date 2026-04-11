@@ -1,4 +1,10 @@
-from agents.shared.schemas import FallEvent, UserMedicalProfile, VisionAssessment, VitalAssessment
+from agents.shared.schemas import (
+    FallEvent,
+    PatientAnswer,
+    UserMedicalProfile,
+    VisionAssessment,
+    VitalAssessment,
+)
 
 
 def build_clinical_reasoning_prompt(
@@ -7,6 +13,7 @@ def build_clinical_reasoning_prompt(
     vision_assessment: VisionAssessment,
     vital_assessment: VitalAssessment | None,
     grounded_medical_guidance: list[str],
+    patient_answers: list[PatientAnswer] | None = None,
 ) -> str:
     vitals_context = (
         f"Vital assessment: {vital_assessment.reasoning} Severity hint: {vital_assessment.severity_hint}."
@@ -14,6 +21,10 @@ def build_clinical_reasoning_prompt(
         else "No vital-sign assessment is available yet."
     )
     guidance_context = "\n".join(f"- {item}" for item in grounded_medical_guidance) or "- No external medical guidance retrieved."
+    answer_context = (
+        "\n".join(f"- {answer.question_id}: {answer.answer}" for answer in (patient_answers or []))
+        or "- No patient answers were collected."
+    )
 
     return f"""
     You are the Clinical Reasoning Agent for an emergency response workflow.
@@ -28,12 +39,15 @@ def build_clinical_reasoning_prompt(
     - Vision Sentinel: fall_detected={vision_assessment.fall_detected}, severity_hint={vision_assessment.severity_hint}
     - Vision Reasoning: {vision_assessment.reasoning}
     - {vitals_context}
+    - Patient or bystander answers:
+    {answer_context}
     - Grounded medical guidance:
     {guidance_context}
 
     Decision rules:
     - If rapid_descent or no_movement occurs with confidence above 0.85, bias toward high or critical severity.
     - If both motion evidence and vitals suggest danger, bias toward critical.
+    - If the patient reports trouble breathing, heavy bleeding, head strike on blood thinners, loss of consciousness, or inability to move safely, bias toward high or critical severity.
     - Elderly patients, blood thinners, or concerning fall red flags should increase caution.
     - Keep the recommended action to one of: monitor, contact_family, emergency_dispatch.
 
