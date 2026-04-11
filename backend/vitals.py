@@ -3,14 +3,14 @@ vitals.py — Vital Signs Ingestion & Anomaly Detection Router
 Golden Hour AI Platform | Backend (FastAPI)
 
 Handles:
-- POST /vitals/        → Receive vitals from wearable/IoT gateway
-- GET  /vitals/{id}    → Fetch latest vitals for a patient
+- POST /vitals/             → Receive vitals from wearable/IoT gateway
+- GET  /vitals/{id}         → Fetch latest vitals for a patient
 - GET  /vitals/{id}/history → Fetch vitals history (for trend analysis)
 
 Anomaly detection uses a threshold + rate-of-change approach:
-1. Absolute thresholds   → immediate critical flag
-2. Rolling delta check   → detects rapid deterioration
-3. Compound assessment   → multiple borderline signs = escalate
+1. Absolute thresholds      → immediate critical flag
+2. Rolling delta check      → detects rapid deterioration
+3. Compound assessment      → multiple borderline signs = escalate
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks # type: ignore
