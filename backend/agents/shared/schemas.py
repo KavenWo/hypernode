@@ -88,3 +88,27 @@ class MvpAssessment(BaseModel):
     action: str = Field(..., description="Next action such as monitor, contact_family, or emergency_dispatch.")
     instructions: list[str] = Field(..., description="Actionable instructions for the user or bystander.")
     reasoning: str = Field(..., description="Reasoning summary from the clinical agent.")
+    ai_status: str = Field(
+        default="fallback",
+        description="Whether live model reasoning or fallback reasoning was used.",
+    )
+    guidance_source: str = Field(
+        default="fallback_file",
+        description="Where grounded medical guidance came from.",
+    )
+    guidance_preview: list[str] = Field(
+        default_factory=list,
+        description="Small preview of the grounded guidance snippets used in the assessment.",
+    )
+    guidance_references: list[dict] = Field(
+        default_factory=list,
+        description="Reference metadata returned by the grounded retrieval layer.",
+    )
+    dispatch_triggered: bool = Field(
+        default=False,
+        description="Whether this assessment started the emergency dispatch layer.",
+    )
+    incident_id: str | None = Field(
+        default=None,
+        description="Incident identifier returned by the dispatch layer when applicable.",
+    )

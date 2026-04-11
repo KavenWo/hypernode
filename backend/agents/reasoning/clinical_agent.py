@@ -1,6 +1,7 @@
 """Clinical agent: combines event data, patient profile, and grounded guidance to assess medical severity."""
 
 import asyncio
+import logging
 
 from google.genai import errors, types
 
@@ -15,6 +16,8 @@ from agents.shared.schemas import (
 )
 
 from .prompts import build_clinical_reasoning_prompt
+
+logger = logging.getLogger(__name__)
 
 
 async def assess_clinical_severity(
@@ -36,7 +39,25 @@ async def assess_clinical_severity(
         patient_answers,
     )
 
+    if client is None:
+        logger.warning(
+            "Live reasoning model unavailable before request. Using fallback clinical assessment for user %s.",
+            event.user_id,
+        )
+        return _fallback_clinical_assessment(
+            event=event,
+            patient_profile=patient_profile,
+            vision_assessment=vision_assessment,
+            vital_assessment=vital_assessment,
+            patient_answers=patient_answers or [],
+        )
+
     try:
+        logger.info(
+            "Starting live clinical reasoning for user %s with %d grounded guidance snippet(s).",
+            event.user_id,
+            len(grounded_medical_guidance),
+        )
         response = await _generate_json_response(
             client=client,
             prompt=prompt,
@@ -45,8 +66,19 @@ async def assess_clinical_severity(
         assessment = response.parsed
         if assessment is None:
             assessment = ClinicalAssessment.model_validate_json(response.text or "{}")
+        logger.info(
+            "Live clinical reasoning succeeded for user %s. Severity=%s Action=%s",
+            event.user_id,
+            assessment.severity,
+            assessment.recommended_action,
+        )
         return assessment
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Live clinical reasoning failed for user %s. Falling back to heuristic assessment. Error: %s",
+            event.user_id,
+            exc,
+        )
         return _fallback_clinical_assessment(
             event=event,
             patient_profile=patient_profile,
@@ -62,6 +94,12 @@ async def _generate_json_response(*, client, prompt: str, schema):
     for model_name in FALLBACK_MODELS:
         for attempt in range(2):
             try:
+                logger.info(
+                    "Attempting live model call with %s (attempt %d/%d).",
+                    model_name,
+                    attempt + 1,
+                    2,
+                )
                 return await client.aio.models.generate_content(
                     model=model_name,
                     contents=prompt,
@@ -72,6 +110,14 @@ async def _generate_json_response(*, client, prompt: str, schema):
                 )
             except errors.APIError as exc:
                 last_error = exc
+                logger.warning(
+                    "Model call failed for %s on attempt %d/%d with code %s: %s",
+                    model_name,
+                    attempt + 1,
+                    2,
+                    exc.code,
+                    exc,
+                )
                 is_retryable = exc.code in {429, 500, 503}
                 is_last_attempt = attempt == 1 and model_name == FALLBACK_MODELS[-1]
                 if not is_retryable or is_last_attempt:
@@ -167,8 +213,15 @@ def _fallback_clinical_assessment(
         + (", ".join(reasons) if reasons else "Limited high-risk signals were detected.")
         + "."
     )
-    return ClinicalAssessment(
+    assessment = ClinicalAssessment(
         severity=severity,
         reasoning=reasoning,
         recommended_action=action,
     )
+    logger.info(
+        "Fallback clinical assessment generated. Severity=%s Action=%s Reasons=%s",
+        assessment.severity,
+        assessment.recommended_action,
+        ", ".join(reasons) if reasons else "limited signals",
+    )
+    return assessment

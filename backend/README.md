@@ -1,6 +1,13 @@
 # Backend Structure
 
-This backend contains a small FastAPI application plus a modular Google GenAI SDK-based agent workflow.
+This backend now has a clearer split between:
+
+- active application code under `app/`
+- reusable agent logic under `agents/`
+- persistence/fallback data under `db/` and `data/`
+- preserved older prototypes under `legacy/`
+
+The goal is to make the MVP path obvious without deleting older teammate files.
 
 ## Run locally
 
@@ -14,16 +21,21 @@ uv run uvicorn app.main:app --reload
 
 ```powershell
 cd backend
-uv run test_phase1.py
-uv run test_agent.py
-uv run test_mvp_flow.py
+uv run tests/test_phase1.py
+uv run tests/test_agent.py
+uv run tests/test_mvp_flow.py
 ```
+
+## Utility scripts
+
+Helper scripts now live under `scripts/` so the backend root stays focused on
+application code and project configuration.
 
 ## Seed Firestore
 
 ```powershell
 cd backend
-uv run seed_firestore.py
+uv run scripts/seed_firestore.py
 ```
 
 If `FIRESTORE_PROJECT_ID` and Google Cloud credentials are configured, the sample patient is written to Firestore.
@@ -45,43 +57,76 @@ If those are not configured yet, the backend falls back to `data/medical_guidanc
 
 You can verify the live app connection with:
 
-`.\.venv\Scripts\python.exe test_vertex_search.py "fall first aid guidance"`
+`.\.venv\Scripts\python.exe tests/test_vertex_search.py "fall first aid guidance"`
 
 ## MVP Flow
 
-The backend now supports the MVP loop as two steps:
+The backend now supports the MVP loop as a centralized two-step flow:
 
-- `POST /api/v1/events/fall/questions` with `event` and optional `vitals`
-- `POST /api/v1/events/fall/assess` with `event`, optional `vitals`, and collected `patient_answers`
+1. `POST /api/v1/events/fall/questions`
+2. `POST /api/v1/events/fall/assess`
 
-The assessment endpoint returns:
+The first endpoint returns 2-3 questions. The second endpoint runs reasoning
+once, returns the MVP result, and automatically starts the mock dispatch layer
+when the assessed action is `emergency_dispatch`.
+
+The assessment response includes:
 
 - `severity`
 - `action`
 - `instructions`
 - `reasoning`
+- `dispatch_triggered`
+- `incident_id`
 
-## Files
+## Root Layout
 
-- `app/main.py`: FastAPI entrypoint and API route that triggers the workflow.
-- `agents/orchestrator.py`: High-level flow controller that coordinates every agent.
-- `agents/shared/`: Shared configuration and schemas used across all agents.
-- `agents/sentinel/`: Detection agents that interpret the incoming event and vitals.
-- `agents/reasoning/`: Clinical reasoning agent and its prompts.
-- `agents/coordinator/`: Dispatch coordination agent and its prompts.
-- `agents/bystander/`: Bystander guidance agent and prompt helpers.
-- `agents/execution/`: Current mock execution boundary that later maps to backend `integrations/`.
-- `db/`: Firestore models and patient profile access.
-- `data/`: Local fallback records for patient state and emergency guidance.
-- `test_phase1.py`: Lightweight local verification script for schemas and mock tools.
-- `test_agent.py`: End-to-end local workflow runner for the Gemini-backed flow.
-- `seed_firestore.py`: Helper for seeding the sample patient into Firestore.
+- `app/`: FastAPI application entrypoint, routes, services, and runtime bootstrap.
+- `agents/`: Shared agent logic used by the MVP pipeline.
+- `db/`: Firestore access and patient profile loading.
+- `data/`: Local fallback patient and guidance data.
+- `tests/`: Local verification scripts for MVP flow, agents, and Vertex search.
+- `scripts/`: Utility scripts such as seeding sample data.
+- `legacy/`: Preserved older prototypes that are not part of the main MVP path.
+- `.env`: Local environment configuration for development.
+- `pyproject.toml`: Python dependency manifest.
+- `uv.lock`: Locked dependency graph for `uv`.
+- `README.md`: Backend orientation and run instructions.
+
+## Active Layout
+
+- `app/main.py`: FastAPI entrypoint that mounts the active routers.
+- `app/core/bootstrap.py`: Shared runtime bootstrap for `.env` loading and logging.
+- `app/api/routes/mvp.py`: Main frontend-facing MVP endpoints.
+- `app/api/routes/emergency.py`: Mock emergency dispatch router and in-memory incident tracker.
+- `app/services/mvp_flow.py`: Centralized MVP flow for questions, single-pass reasoning, and optional dispatch.
+- `agents/shared/`: Shared config and schemas used across the backend.
+- `agents/sentinel/`: Event and vitals inspection logic.
+- `agents/triage/`: Question generation for the 2-3 question MVP intake step.
+- `agents/reasoning/`: Clinical reasoning agent and prompt builder.
+- `agents/bystander/`: Grounded guidance retrieval and bystander instruction helpers.
+- `agents/coordinator/`: Older dispatch decision logic kept for experiments.
+- `db/`: Firestore access and sample patient loading.
+- `data/`: Local fallback patient and medical guidance data.
+
+## Legacy And Compatibility
+
+- `legacy/triage_agent.py`: Preserved teammate triage prototype.
+- `legacy/vitals.py`: Preserved standalone vitals router prototype.
+- `agents/orchestrator.py`: Compatibility wrapper plus older direct-dispatch experiment.
+
+## Tests And Scripts
+
+- `tests/test_api_mvp.py`: API-level verification for the exact frontend MVP sequence.
+- `tests/test_mvp_flow.py`: Direct shared-service verification for the MVP flow.
+- `tests/test_phase1.py`: Lightweight schema and mock-tool verification.
+- `tests/test_agent.py`: End-to-end local workflow runner for the Gemini-backed flow.
+- `tests/test_vertex_search.py`: Vertex AI Search inspection utility.
+- `scripts/seed_firestore.py`: Helper for seeding the sample patient into Firestore.
 - `pyproject.toml`: Canonical dependency manifest for `uv`.
 
 ## Architecture Notes
 
-- `agents/` holds reasoning and orchestration only.
-- `agents/execution/` is a temporary boundary for mocked side effects during development.
-- `db/` holds live patient state, with a local fallback record for setup and tests.
-- `Vertex AI Search` should hold emergency medical facts and procedural guidance.
-- When merging with the backend member's work, functions in `agents/execution/` should move behind `integrations/` modules such as Twilio, Maps, and hospital webhook clients.
+- The current MVP path is: `app/api/routes/mvp.py` -> `app/services/mvp_flow.py` -> `agents/*`.
+- `legacy/` is for preserved prototypes that we are not deleting, but that are not part of the main MVP path.
+- `Vertex AI Search` provides grounded snippets and references for medical guidance rather than whole attached documents.

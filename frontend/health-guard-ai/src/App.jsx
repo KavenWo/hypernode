@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
+import MvpTestPage from "./components/MvpTestPage.jsx";
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
-const PAGES = { ONBOARDING: "onboarding", MONITORING: "monitoring", EMERGENCY: "emergency" };
+const PAGES = { ONBOARDING: "onboarding", MONITORING: "monitoring", EMERGENCY: "emergency", MVP_TEST: "mvp_test" };
 
 // ─── DUMMY DATA ──────────────────────────────────────────────────────────────
 const DUMMY_PATIENT = {
@@ -994,6 +995,7 @@ export default function App() {
   const [page, setPage] = useState(PAGES.MONITORING);
 
   const navItems = [
+    { id: PAGES.MVP_TEST, icon: "🧪", label: "MVP Test" },
     { id: PAGES.ONBOARDING, icon: "👤", label: "Onboarding" },
     { id: PAGES.MONITORING, icon: "💓", label: "Monitoring" },
     { id: PAGES.EMERGENCY, icon: "🚨", label: "Emergency" },
@@ -1020,6 +1022,7 @@ export default function App() {
         <div className="main">
           {page === PAGES.ONBOARDING && <OnboardingPage />}
           {page === PAGES.MONITORING && <MonitoringPage />}
+          {page === PAGES.MVP_TEST && <MvpTestPage />}
           {page === PAGES.EMERGENCY && <EmergencyPage />}
         </div>
       </div>
