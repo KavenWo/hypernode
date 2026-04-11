@@ -1,0 +1,25 @@
+{
+  "user_id": "user_001",
+  "full_name": "Amina Rahman",
+  "age": 78,
+  "pre_existing_conditions": [
+    "Hypertension",
+    "Osteoporosis",
+    "History of prior fall"
+  ],
+  "medications": [
+    "Amlodipine",
+    "Warfarin"
+  ],
+  "allergies": [
+    "Penicillin"
+  ],
+  "emergency_contacts": [
+    "+60123456789",
+    "+60199887766"
+  ],
+  "blood_thinners": true,
+  "mobility_support": true,
+  "primary_language": "en",
+  "address": "Kuala Lumpur, Malaysia"
+}
