@@ -28,7 +28,13 @@ from agents.sentinel.vital_agent import inspect_vitals
 from agents.sentinel.vision_agent import inspect_fall_event
 from agents.shared.config import get_genai_client
 from agents.shared.schemas import (
+    ActionSummary,
+    AuditSummary,
+    ClinicalAssessmentSummary,
+    DetectionSummary,
     FallEvent,
+    GroundingSummary,
+    GuidanceSummary,
     MvpAssessment,
     PatientAnswer,
     TriageQuestionSet,
@@ -48,6 +54,14 @@ FALLBACK_REASONING_PREFIX = "Fallback assessment used because the live reasoning
 def load_user_profile(user_id: str) -> UserMedicalProfile:
     """Load the patient profile once and normalize it to the shared schema."""
     return UserMedicalProfile.model_validate(load_patient_profile(user_id).model_dump())
+
+
+def _confidence_band(score: float) -> str:
+    if score >= 0.75:
+        return "high"
+    if score >= 0.40:
+        return "medium"
+    return "low"
 
 
 def build_guidance_query(
@@ -104,6 +118,52 @@ def _should_trigger_dispatch(action: str) -> bool:
     return action == "emergency_dispatch"
 
 
+def _event_validity(event: FallEvent, vision_assessment) -> str:
+    if vision_assessment.fall_detected and event.confidence_score >= 0.75:
+        return "likely_true"
+    if event.confidence_score >= 0.4:
+        return "uncertain"
+    return "weak_signal"
+
+
+def _responder_mode(patient_answers: list[PatientAnswer]) -> str:
+    answer_text = " ".join(answer.answer.lower() for answer in patient_answers)
+    if not patient_answers:
+        return "no_response"
+    if "bystander" in answer_text or "he is" in answer_text or "she is" in answer_text or "the patient" in answer_text:
+        return "bystander"
+    return "patient"
+
+
+def _guidance_primary_message(action: str, instructions: list[str]) -> str:
+    if instructions:
+        return instructions[0]
+    if action in {"dispatch_pending_confirmation", "emergency_dispatch"}:
+        return "Stay still and wait for help."
+    if action == "contact_family":
+        return "Stay in a safe position and contact a caregiver or family member."
+    return "Monitor symptoms and avoid standing up too quickly."
+
+
+def _guidance_warnings(red_flags: list[str]) -> list[str]:
+    warnings: list[str] = []
+    if any(flag in red_flags for flag in ["head_strike", "suspected_spinal_injury", "severe_neck_pain", "severe_back_pain", "cannot_stand"]):
+        warnings.append("Do not try to stand or move quickly.")
+    if "severe_bleeding" not in red_flags:
+        warnings.append("Do not ignore worsening breathing, bleeding, or confusion.")
+    return warnings[:2]
+
+
+def _status_for_action(action: str) -> str:
+    if action == "dispatch_pending_confirmation":
+        return "dispatch_pending_confirmation"
+    if action == "emergency_dispatch":
+        return "dispatch_confirmed"
+    if action == "contact_family":
+        return "triage_in_progress"
+    return "guidance_active"
+
+
 def _map_assessment_severity_to_dispatch(severity: str) -> EmergencySeverityLevel:
     """Bridge the reasoning severity labels to the dispatch layer labels."""
     normalized = severity.lower().strip()
@@ -133,13 +193,13 @@ def _build_dispatch_ai_summary(
         "suspected_conditions": [
             {
                 "condition": "Fall-related injury",
-                "confidence": assessment.severity,
-                "reasoning": assessment.reasoning,
+                "confidence": assessment.clinical_assessment.action_confidence_band,
+                "reasoning": assessment.clinical_assessment.reasoning_summary,
             }
         ],
         "self_help_actions": [
             {
-                "action": assessment.action,
+                "action": assessment.action.recommended,
                 "priority": 1,
                 "rationale": "Generated from the centralized MVP reasoning flow.",
             }
@@ -148,7 +208,7 @@ def _build_dispatch_ai_summary(
         "key_alerts": key_alerts,
         "recommended_prep": ["Prepare fall-injury intake", "Review patient profile on arrival"],
         "contact_priority": ["999", "next_of_kin"],
-        "summary": assessment.reasoning,
+        "summary": assessment.clinical_assessment.reasoning_summary,
     }
 
 
@@ -212,36 +272,71 @@ async def run_mvp_fall_assessment(
         grounded_medical_guidance=grounded_medical_guidance,
         patient_answers=answers,
     )
+    instruction_steps = build_first_aid_instructions_from_guidance(grounded_medical_guidance).steps
+    next_action = clinical_assessment.recommended_action
 
     assessment = MvpAssessment(
-        severity=clinical_assessment.severity,
-        action=clinical_assessment.recommended_action,
-        instructions=build_first_aid_instructions_from_guidance(grounded_medical_guidance).steps,
-        reasoning=clinical_assessment.reasoning,
-        ai_status=(
-            "fallback"
-            if clinical_assessment.reasoning.startswith(FALLBACK_REASONING_PREFIX)
-            else "live_model"
+        incident_id=None,
+        status=_status_for_action(next_action),
+        responder_mode=_responder_mode(answers),
+        detection=DetectionSummary(
+            motion_state=event.motion_state,
+            fall_detection_confidence_score=event.confidence_score,
+            fall_detection_confidence_band=_confidence_band(event.confidence_score),
+            event_validity=_event_validity(event, vision_assessment),
         ),
-        guidance_source=guidance_bundle["source"],
-        guidance_preview=grounded_medical_guidance[:3],
-        guidance_references=guidance_bundle.get("references", []),
+        clinical_assessment=ClinicalAssessmentSummary(
+            severity=clinical_assessment.severity,
+            clinical_confidence_score=clinical_assessment.clinical_confidence_score,
+            clinical_confidence_band=clinical_assessment.clinical_confidence_band,
+            action_confidence_score=clinical_assessment.action_confidence_score,
+            action_confidence_band=clinical_assessment.action_confidence_band,
+            red_flags=clinical_assessment.red_flags,
+            protective_signals=clinical_assessment.protective_signals,
+            suspected_risks=clinical_assessment.suspected_risks,
+            uncertainty=clinical_assessment.uncertainty,
+            reasoning_summary=clinical_assessment.reasoning_summary,
+        ),
+        action=ActionSummary(
+            recommended=next_action,
+            requires_confirmation=(next_action == "dispatch_pending_confirmation"),
+            cancel_allowed=(next_action in {"dispatch_pending_confirmation", "emergency_dispatch"}),
+            countdown_seconds=30 if next_action == "dispatch_pending_confirmation" else None,
+        ),
+        guidance=GuidanceSummary(
+            primary_message=_guidance_primary_message(
+                next_action,
+                instruction_steps,
+            ),
+            steps=instruction_steps,
+            warnings=_guidance_warnings(clinical_assessment.red_flags),
+        ),
+        grounding=GroundingSummary(
+            source=guidance_bundle["source"],
+            references=guidance_bundle.get("references", []),
+            preview=grounded_medical_guidance[:3],
+        ),
+        audit=AuditSummary(
+            fallback_used=clinical_assessment.reasoning_summary.startswith(FALLBACK_REASONING_PREFIX),
+            policy_version="phase1_v1",
+            dispatch_triggered=False,
+        ),
     )
     logger.info(
-        "MVP assessment completed for user %s. Severity=%s Action=%s AI=%s Guidance=%s",
+        "MVP assessment completed for user %s. Severity=%s Action=%s Fallback=%s Guidance=%s",
         event.user_id,
-        assessment.severity,
-        assessment.action,
-        assessment.ai_status,
-        assessment.guidance_source,
+        assessment.clinical_assessment.severity,
+        assessment.action.recommended,
+        assessment.audit.fallback_used,
+        assessment.grounding.source,
     )
 
-    if not trigger_dispatch or not _should_trigger_dispatch(assessment.action):
+    if not trigger_dispatch or not _should_trigger_dispatch(assessment.action.recommended):
         return assessment
 
     incident_id = await trigger_emergency(
         patient_id=event.user_id,
-        severity=_map_assessment_severity_to_dispatch(assessment.severity),
+        severity=_map_assessment_severity_to_dispatch(assessment.clinical_assessment.severity),
         vitals=_vitals_to_dispatch_payload(vitals),
         flags=["fall_detected", f"motion_state:{event.motion_state}"],
         ai_decision=_build_dispatch_ai_summary(
@@ -259,7 +354,8 @@ async def run_mvp_fall_assessment(
 
     return assessment.model_copy(
         update={
-            "dispatch_triggered": True,
             "incident_id": incident_id,
+            "status": "dispatch_confirmed",
+            "audit": assessment.audit.model_copy(update={"dispatch_triggered": True}),
         }
     )

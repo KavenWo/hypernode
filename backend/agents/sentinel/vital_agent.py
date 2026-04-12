@@ -7,14 +7,24 @@ async def inspect_vitals(vitals: VitalSigns | None) -> VitalAssessment | None:
     if vitals is None:
         return None
 
-    anomaly_detected = (
+    critical_abnormality = (
+        vitals.heart_rate < 40
+        or vitals.heart_rate > 140
+        or vitals.blood_oxygen_sp02 < 90
+        or vitals.blood_pressure_systolic < 90
+    )
+    anomaly_detected = critical_abnormality or (
         vitals.heart_rate < 45
         or vitals.heart_rate > 130
         or vitals.blood_oxygen_sp02 < 92
     )
-    severity_hint = "high" if anomaly_detected else "low"
+    severity_hint = "critical" if critical_abnormality else "medium" if anomaly_detected else "low"
     reasoning = (
-        "Abnormal vital signs detected." if anomaly_detected else "Vital signs are within the expected MVP range."
+        "Critical abnormal vital signs detected."
+        if critical_abnormality
+        else "Abnormal vital signs detected."
+        if anomaly_detected
+        else "Vital signs are within the expected MVP range."
     )
 
     return VitalAssessment(

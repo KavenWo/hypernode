@@ -16,10 +16,11 @@ def build_dispatch_prompt(
     - Vision severity hint: {vision_assessment.severity_hint}
     - Clinical severity: {clinical_assessment.severity}
     - Clinical recommended action: {clinical_assessment.recommended_action}
-    - Clinical reasoning: {clinical_assessment.reasoning}
+    - Clinical reasoning: {clinical_assessment.reasoning_summary}
 
     Decision rules:
-    - For high or critical severity, set notify_family to true.
+    - For critical severity, set notify_family to true.
+    - For medium severity, set notify_family to true when escalation support would help.
     - For low severity, do not dispatch emergency services.
     - Set first_aid_instructions_needed to true whenever an urgent response from bystanders would help.
     - Set call_emergency_services to true only when ambulance dispatch is justified.

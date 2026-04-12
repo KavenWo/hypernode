@@ -62,10 +62,16 @@ def main() -> None:
     assess_response.raise_for_status()
     assessment = assess_response.json()
 
-    assert assessment["severity"] in {"high", "critical"}, assessment
-    assert assessment["action"] == "emergency_dispatch", assessment
-    assert assessment["dispatch_triggered"] is True, assessment
-    assert assessment["incident_id"], assessment
+    assert assessment["clinical_assessment"]["severity"] == "critical", assessment
+    assert assessment["action"]["recommended"] in {"dispatch_pending_confirmation", "emergency_dispatch"}, assessment
+    assert assessment["clinical_assessment"]["red_flags"], assessment
+    assert assessment["detection"]["fall_detection_confidence_band"] == "high", assessment
+    assert assessment["grounding"]["source"] in {"vertex_ai_search", "fallback_file"}, assessment
+    assert assessment["audit"]["dispatch_triggered"] == (assessment["action"]["recommended"] == "emergency_dispatch"), assessment
+    if assessment["action"]["recommended"] == "emergency_dispatch":
+        assert assessment["incident_id"], assessment
+    else:
+        assert assessment["incident_id"] in {None, ""}, assessment
 
     print("MVP API flow verified.")
 

@@ -67,7 +67,7 @@ async def vital_signs_emergency_workflow(
         grounded_medical_guidance=grounded_medical_guidance,
         patient_answers=[],
     )
-    print(f"Clinical Assessment: [{clinical_assessment.severity.upper()}] - {clinical_assessment.reasoning}")
+    print(f"Clinical Assessment: [{clinical_assessment.severity.upper()}] - {clinical_assessment.reasoning_summary}")
 
     decision = await decide_dispatch(
         client=client,

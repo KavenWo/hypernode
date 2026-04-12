@@ -38,6 +38,10 @@ function StatusTag({ active, label, danger = false }) {
   );
 }
 
+function formatScore(value) {
+  return typeof value === "number" ? value.toFixed(2) : value ?? "-";
+}
+
 export default function MvpTestPage() {
   const [event, setEvent] = useState(DEFAULT_EVENT);
   const [vitals, setVitals] = useState(DEFAULT_VITALS);
@@ -238,20 +242,18 @@ export default function MvpTestPage() {
 
   const canRunAssessment =
     questions.length > 0 && questions.every((question) => (answers[question.question_id] || "").trim().length > 0);
-  const guidanceMatchesInstructions =
-    Boolean(assessment) &&
-    JSON.stringify(assessment.instructions || []) === JSON.stringify(assessment.guidance_preview || []);
   const selectedPatient = patients.find((patient) => patient.user_id === event.user_id);
   const debugSnapshot = assessment
     ? {
-        severity: assessment.severity,
-        action: assessment.action,
-        ai_status: assessment.ai_status,
-        guidance_source: assessment.guidance_source,
-        guidance_references: assessment.guidance_references,
-        dispatch_triggered: assessment.dispatch_triggered,
+        status: assessment.status,
+        responder_mode: assessment.responder_mode,
+        severity: assessment.clinical_assessment?.severity,
+        action: assessment.action?.recommended,
+        fallback_used: assessment.audit?.fallback_used,
+        grounding_source: assessment.grounding?.source,
+        dispatch_triggered: assessment.audit?.dispatch_triggered,
         incident_id: assessment.incident_id,
-        reasoning: assessment.reasoning,
+        reasoning_summary: assessment.clinical_assessment?.reasoning_summary,
       }
     : status;
 
@@ -306,13 +308,7 @@ export default function MvpTestPage() {
             </select>
             {patients.length > 0 && (
               <p style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 6 }}>
-                Selected profile:
-                {" "}
-                {selectedPatient?.age ?? "?"}
-                {" "}
-                years old
-                {" · "}
-                {selectedPatient?.blood_thinners ? "blood thinners" : "no blood thinners"}
+                Selected profile: {selectedPatient?.age ?? "?"} years old · {selectedPatient?.blood_thinners ? "blood thinners" : "no blood thinners"}
               </p>
             )}
           </div>
@@ -333,7 +329,7 @@ export default function MvpTestPage() {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Confidence Score</label>
+            <label className="form-label">Fall Detection Confidence</label>
             <input className="form-input" type="number" min="0" max="1" step="0.01" value={event.confidence_score} onChange={(e) => updateEvent("confidence_score", e.target.value)} />
           </div>
 
@@ -406,30 +402,64 @@ export default function MvpTestPage() {
 
             {!assessment && (
               <p style={{ fontSize: 13, color: "var(--text-sub)" }}>
-                The result panel will show severity, action, instructions, AI mode, grounded guidance source, and dispatch details.
+                The result panel will show the Phase 1 contract: severity, confidence bands, action, red flags, grounded guidance, and dispatch state.
               </p>
             )}
 
             {assessment && (
               <>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-                  <span className={`tag ${assessment.severity === "critical" || assessment.severity === "high" ? "tag-red" : ""}`}>
-                    Severity · {assessment.severity}
+                  <span className={`tag ${assessment.clinical_assessment?.severity === "critical" ? "tag-red" : ""}`}>
+                    Severity · {assessment.clinical_assessment?.severity}
                   </span>
-                  <span className="tag">Action · {assessment.action}</span>
-                  <span className="tag">AI · {assessment.ai_status}</span>
-                  <span className="tag">Guidance · {assessment.guidance_source}</span>
+                  <span className="tag">Action · {assessment.action?.recommended}</span>
+                  <span className="tag">Responder · {assessment.responder_mode}</span>
+                  <span className="tag">Grounding · {assessment.grounding?.source}</span>
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Reasoning</label>
-                  <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6 }}>{assessment.reasoning}</div>
+                  <label className="form-label">Confidence</label>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <span className="tag">Detection · {assessment.detection?.fall_detection_confidence_band} ({formatScore(assessment.detection?.fall_detection_confidence_score)})</span>
+                    <span className="tag">Clinical · {assessment.clinical_assessment?.clinical_confidence_band} ({formatScore(assessment.clinical_assessment?.clinical_confidence_score)})</span>
+                    <span className="tag">Action · {assessment.clinical_assessment?.action_confidence_band} ({formatScore(assessment.clinical_assessment?.action_confidence_score)})</span>
+                  </div>
                 </div>
+
+                <div className="form-group">
+                  <label className="form-label">Reasoning Summary</label>
+                  <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6 }}>{assessment.clinical_assessment?.reasoning_summary}</div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Red Flags</label>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {(assessment.clinical_assessment?.red_flags || []).map((flag) => (
+                      <span className="tag tag-red" key={flag}>{flag}</span>
+                    ))}
+                    {(assessment.clinical_assessment?.red_flags || []).length === 0 && (
+                      <p style={{ fontSize: 13, color: "var(--text-sub)" }}>No normalized red flags were returned.</p>
+                    )}
+                  </div>
+                </div>
+
+                {assessment.clinical_assessment?.uncertainty?.length > 0 && (
+                  <div className="form-group">
+                    <label className="form-label">Uncertainty</label>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {assessment.clinical_assessment.uncertainty.map((item, index) => (
+                        <div key={`${item}-${index}`} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                          {item}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="form-group">
                   <label className="form-label">Instructions</label>
                   <div className="instruction-box">
-                    {assessment.instructions.map((step, index) => (
+                    {(assessment.guidance?.steps || []).map((step, index) => (
                       <div className="instruction-step" key={`${step}-${index}`}>
                         <span className="step-num">{index + 1}</span>
                         <p>{step}</p>
@@ -438,11 +468,24 @@ export default function MvpTestPage() {
                   </div>
                 </div>
 
-                {!guidanceMatchesInstructions && assessment.guidance_preview.length > 0 && (
+                {assessment.guidance?.warnings?.length > 0 && (
+                  <div className="form-group">
+                    <label className="form-label">Warnings</label>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {assessment.guidance.warnings.map((warning, index) => (
+                        <div key={`${index}-${warning.slice(0, 20)}`} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                          {warning}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {assessment.grounding?.preview?.length > 0 && (
                   <div className="form-group">
                     <label className="form-label">Grounded Guidance Preview</label>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {assessment.guidance_preview.map((snippet, index) => (
+                      {assessment.grounding.preview.map((snippet, index) => (
                         <div key={`${index}-${snippet.slice(0, 20)}`} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
                           {snippet}
                         </div>
@@ -451,20 +494,11 @@ export default function MvpTestPage() {
                   </div>
                 )}
 
-                {guidanceMatchesInstructions && assessment.guidance_preview.length > 0 && (
-                  <div className="form-group">
-                    <label className="form-label">Grounded Guidance Source</label>
-                    <p style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: 10 }}>
-                      The current backend builds instructions directly from the grounded guidance snippets, so this run does not have a separate guidance preview to show.
-                    </p>
-                  </div>
-                )}
-
-                {assessment.guidance_references?.length > 0 && (
+                {assessment.grounding?.references?.length > 0 && (
                   <div className="form-group">
                     <label className="form-label">Guidance References</label>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {assessment.guidance_references.map((reference, index) => (
+                      {assessment.grounding.references.map((reference, index) => (
                         <div
                           key={`${reference.document_id || reference.uri || reference.link || index}`}
                           style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}
@@ -484,7 +518,13 @@ export default function MvpTestPage() {
                 )}
 
                 <div style={{ marginTop: 10, fontSize: 13, color: "var(--text-sub)" }}>
-                  Dispatch Triggered: <strong style={{ color: "var(--text)" }}>{assessment.dispatch_triggered ? "Yes" : "No"}</strong>
+                  Dispatch Triggered: <strong style={{ color: "var(--text)" }}>{assessment.audit?.dispatch_triggered ? "Yes" : "No"}</strong>
+                </div>
+                <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-sub)" }}>
+                  Status: <strong style={{ color: "var(--text)" }}>{assessment.status}</strong>
+                </div>
+                <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-sub)" }}>
+                  Event Validity: <strong style={{ color: "var(--text)" }}>{assessment.detection?.event_validity}</strong>
                 </div>
                 <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-sub)" }}>
                   Incident ID: <span style={{ fontFamily: "'DM Mono', monospace", color: "var(--text)" }}>{assessment.incident_id || "None"}</span>
@@ -496,7 +536,7 @@ export default function MvpTestPage() {
           <div className="card">
             <div className="card-title">Backend Debug View</div>
             <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 10 }}>
-              Logs are still the best place to inspect internal agent details. This panel now focuses on the non-duplicated API fields that matter for MVP testing.
+              Logs are still the best place to inspect internal agent details. This panel now focuses on the normalized Phase 1 fields that matter for MVP testing.
             </p>
             <pre style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 14, overflowX: "auto", whiteSpace: "pre-wrap", fontSize: 12, lineHeight: 1.5, color: "var(--text-sub)", minHeight: 140 }}>
               {JSON.stringify(debugSnapshot, null, 2)}

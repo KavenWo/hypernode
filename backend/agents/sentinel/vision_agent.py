@@ -15,7 +15,7 @@ async def inspect_fall_event(event: FallEvent) -> VisionAssessment:
     if event.motion_state == "rapid_descent" and event.confidence_score > 0.85:
         severity_hint = "critical"
     elif high_risk_state and event.confidence_score > 0.7:
-        severity_hint = "high"
+        severity_hint = "medium"
     elif event.confidence_score > 0.5:
         severity_hint = "medium"
     else:

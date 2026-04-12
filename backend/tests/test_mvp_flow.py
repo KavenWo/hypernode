@@ -61,11 +61,11 @@ async def main() -> None:
     )
 
     print("\nAssessment:")
-    print(f"Severity: {assessment.severity}")
-    print(f"Action: {assessment.action}")
-    print(f"Reasoning: {assessment.reasoning}")
+    print(f"Severity: {assessment.clinical_assessment.severity}")
+    print(f"Action: {assessment.action.recommended}")
+    print(f"Reasoning: {assessment.clinical_assessment.reasoning_summary}")
     print("Instructions:")
-    for step in assessment.instructions:
+    for step in assessment.guidance.steps:
         print(f"- {step}")
 
 

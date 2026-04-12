@@ -32,13 +32,13 @@ class PatientAnswer(BaseModel):
 
 class VisionAssessment(BaseModel):
     fall_detected: bool = Field(..., description="Whether the vision or motion layer believes a fall occurred.")
-    severity_hint: str = Field(..., description="Initial risk hint such as low, medium, high, or critical.")
+    severity_hint: str = Field(..., description="Initial risk hint such as low, medium, or critical.")
     reasoning: str = Field(..., description="Short explanation of why the event was classified this way.")
 
 
 class VitalAssessment(BaseModel):
     anomaly_detected: bool = Field(..., description="Whether abnormal vitals were found.")
-    severity_hint: str = Field(..., description="Risk hint derived from vitals.")
+    severity_hint: str = Field(..., description="Risk hint derived from vitals using low, medium, or critical.")
     reasoning: str = Field(..., description="Short explanation of the vital-sign assessment.")
 
 
@@ -55,9 +55,17 @@ class UserMedicalProfile(BaseModel):
 
 
 class ClinicalAssessment(BaseModel):
-    severity: str = Field(..., description="Assessed severity: low, medium, high, or critical.")
-    reasoning: str = Field(..., description="Explanation of why this severity was chosen.")
-    recommended_action: str = Field(..., description="Recommended next action such as monitor, contact_family, or emergency_dispatch.")
+    severity: str = Field(..., description="Assessed severity: low, medium, or critical.")
+    clinical_confidence_score: float = Field(..., description="Confidence that the severity is appropriate.")
+    clinical_confidence_band: str = Field(..., description="Band form of clinical confidence: low, medium, high.")
+    action_confidence_score: float = Field(..., description="Confidence that the recommended action should happen now.")
+    action_confidence_band: str = Field(..., description="Band form of action confidence: low, medium, high.")
+    red_flags: list[str] = Field(default_factory=list, description="Normalized red-flag keys.")
+    protective_signals: list[str] = Field(default_factory=list, description="Signals that suggest stability.")
+    suspected_risks: list[str] = Field(default_factory=list, description="Short suspected risk labels.")
+    uncertainty: list[str] = Field(default_factory=list, description="Important unknowns or ambiguities.")
+    reasoning_summary: str = Field(..., description="Short explanation of why this severity and action were chosen.")
+    recommended_action: str = Field(..., description="Recommended next action from the fixed action vocabulary.")
 
 
 class FallQuestionsRequest(BaseModel):
@@ -83,32 +91,58 @@ class BystanderInstruction(BaseModel):
     steps: list[str] = Field(..., description="Step-by-step actions for nearby helpers.")
 
 
-class MvpAssessment(BaseModel):
+class DetectionSummary(BaseModel):
+    motion_state: str = Field(..., description="Event motion state.")
+    fall_detection_confidence_score: float = Field(..., description="Numeric fall detection confidence score.")
+    fall_detection_confidence_band: str = Field(..., description="Band form of fall detection confidence.")
+    event_validity: str = Field(..., description="Normalized event validity such as likely_true or uncertain.")
+
+
+class ClinicalAssessmentSummary(BaseModel):
     severity: str = Field(..., description="Overall severity for the incident.")
-    action: str = Field(..., description="Next action such as monitor, contact_family, or emergency_dispatch.")
-    instructions: list[str] = Field(..., description="Actionable instructions for the user or bystander.")
-    reasoning: str = Field(..., description="Reasoning summary from the clinical agent.")
-    ai_status: str = Field(
-        default="fallback",
-        description="Whether live model reasoning or fallback reasoning was used.",
-    )
-    guidance_source: str = Field(
-        default="fallback_file",
-        description="Where grounded medical guidance came from.",
-    )
-    guidance_preview: list[str] = Field(
-        default_factory=list,
-        description="Small preview of the grounded guidance snippets used in the assessment.",
-    )
-    guidance_references: list[dict] = Field(
-        default_factory=list,
-        description="Reference metadata returned by the grounded retrieval layer.",
-    )
-    dispatch_triggered: bool = Field(
-        default=False,
-        description="Whether this assessment started the emergency dispatch layer.",
-    )
-    incident_id: str | None = Field(
-        default=None,
-        description="Incident identifier returned by the dispatch layer when applicable.",
-    )
+    clinical_confidence_score: float = Field(..., description="Numeric clinical confidence score.")
+    clinical_confidence_band: str = Field(..., description="Band form of clinical confidence.")
+    action_confidence_score: float = Field(..., description="Numeric action confidence score.")
+    action_confidence_band: str = Field(..., description="Band form of action confidence.")
+    red_flags: list[str] = Field(default_factory=list, description="Normalized red-flag keys.")
+    protective_signals: list[str] = Field(default_factory=list, description="Signals that suggest stability.")
+    suspected_risks: list[str] = Field(default_factory=list, description="Short suspected risk labels.")
+    uncertainty: list[str] = Field(default_factory=list, description="Important unknowns or ambiguities.")
+    reasoning_summary: str = Field(..., description="Short explanation of the clinical reasoning result.")
+
+
+class ActionSummary(BaseModel):
+    recommended: str = Field(..., description="Recommended next action from the fixed action vocabulary.")
+    requires_confirmation: bool = Field(..., description="Whether the action needs a short confirmation window.")
+    cancel_allowed: bool = Field(..., description="Whether the user can cancel the action.")
+    countdown_seconds: int | None = Field(default=None, description="Optional countdown before escalation.")
+
+
+class GuidanceSummary(BaseModel):
+    primary_message: str = Field(..., description="Short immediate instruction.")
+    steps: list[str] = Field(default_factory=list, description="Step-by-step actions for the patient or bystander.")
+    warnings: list[str] = Field(default_factory=list, description="Short do-not-do warnings.")
+
+
+class GroundingSummary(BaseModel):
+    source: str = Field(default="fallback_file", description="Where grounded medical guidance came from.")
+    references: list[dict] = Field(default_factory=list, description="Reference metadata from retrieval.")
+    preview: list[str] = Field(default_factory=list, description="Small preview of grounded snippets used.")
+
+
+class AuditSummary(BaseModel):
+    fallback_used: bool = Field(default=True, description="Whether fallback reasoning was used.")
+    policy_version: str = Field(default="phase1_v1", description="Version of the response policy contract.")
+    dispatch_triggered: bool = Field(default=False, description="Whether emergency dispatch started.")
+
+
+class MvpAssessment(BaseModel):
+    incident_id: str | None = Field(default=None, description="Incident identifier returned by the dispatch layer when applicable.")
+    status: str = Field(..., description="Current incident status.")
+    responder_mode: str = Field(..., description="Who is currently responding: patient, bystander, or no_response.")
+    detection: DetectionSummary
+    clinical_assessment: ClinicalAssessmentSummary
+    action: ActionSummary
+    guidance: GuidanceSummary
+    grounding: GroundingSummary = Field(default_factory=GroundingSummary)
+    audit: AuditSummary = Field(default_factory=AuditSummary)
