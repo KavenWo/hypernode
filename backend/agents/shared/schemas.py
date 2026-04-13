@@ -122,12 +122,16 @@ class GuidanceSummary(BaseModel):
     primary_message: str = Field(..., description="Short immediate instruction.")
     steps: list[str] = Field(default_factory=list, description="Step-by-step actions for the patient or bystander.")
     warnings: list[str] = Field(default_factory=list, description="Short do-not-do warnings.")
+    escalation_triggers: list[str] = Field(default_factory=list, description="Grounded escalation cues that explain when urgent help is needed.")
 
 
 class GroundingSummary(BaseModel):
     source: str = Field(default="fallback_file", description="Where grounded medical guidance came from.")
     references: list[dict] = Field(default_factory=list, description="Reference metadata from retrieval.")
     preview: list[str] = Field(default_factory=list, description="Small preview of grounded snippets used.")
+    retrieval_intents: list[str] = Field(default_factory=list, description="Selected retrieval intents used for this guidance run.")
+    queries: list[str] = Field(default_factory=list, description="Ordered retrieval queries issued or planned for this guidance run.")
+    buckets: dict[str, list[str]] = Field(default_factory=dict, description="Grouped snippets selected for the retrieval debug view.")
 
 
 class AuditSummary(BaseModel):

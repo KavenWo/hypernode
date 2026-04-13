@@ -5,6 +5,9 @@ These routes are intentionally thin. They delegate the business flow to
 place to understand the prototype behavior.
 """
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, BackgroundTasks
 
 from agents.shared.schemas import (
@@ -18,6 +21,7 @@ from app.services.mvp_flow import get_mvp_fall_questions, get_runtime_status, ru
 from db.firebase_client import list_sample_patient_profiles
 
 router = APIRouter(prefix="/api/v1/events/fall", tags=["MVP Fall Flow"])
+SCENARIO_PACK_PATH = Path(__file__).resolve().parents[3] / "data" / "phase2_test_scenarios.json"
 
 
 @router.get("/status")
@@ -43,6 +47,14 @@ async def get_sample_patients() -> dict:
             for profile in profiles
         ]
     }
+
+
+@router.get("/phase2-scenarios")
+async def get_phase2_scenarios() -> dict:
+    """Return a small scenario pack so the MVP can test retrieval behavior quickly."""
+    with SCENARIO_PACK_PATH.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return payload
 
 
 @router.post("/questions", response_model=TriageQuestionSet)

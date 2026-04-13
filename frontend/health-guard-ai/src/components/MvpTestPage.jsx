@@ -47,6 +47,7 @@ export default function MvpTestPage() {
   const [vitals, setVitals] = useState(DEFAULT_VITALS);
   const [status, setStatus] = useState(null);
   const [patients, setPatients] = useState([]);
+  const [scenarios, setScenarios] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [answers, setAnswers] = useState({});
   const [assessment, setAssessment] = useState(null);
@@ -58,16 +59,19 @@ export default function MvpTestPage() {
 
     async function loadStatus() {
       try {
-        const [statusResponse, patientsResponse] = await Promise.all([
+        const [statusResponse, patientsResponse, scenariosResponse] = await Promise.all([
           fetch(`${API_BASE_URL}/api/v1/events/fall/status`),
           fetch(`${API_BASE_URL}/api/v1/events/fall/patients`),
+          fetch(`${API_BASE_URL}/api/v1/events/fall/phase2-scenarios`),
         ]);
         const payload = await statusResponse.json();
         const patientsPayload = await patientsResponse.json();
+        const scenariosPayload = await scenariosResponse.json();
         const nextPatients = normalizePatients(patientsPayload.patients);
         if (!ignore) {
           setStatus(payload);
           setPatients(nextPatients);
+          setScenarios(scenariosPayload.scenarios || []);
           setEvent((current) => {
             if (nextPatients.length === 0) {
               return current;
@@ -191,45 +195,19 @@ export default function MvpTestPage() {
     }
   }
 
-  function fillPreset(preset) {
-    if (preset === "head_injury") {
-      setEvent({
-        user_id: "user_001",
-        timestamp: "2024-04-10T12:00:00Z",
-        motion_state: "rapid_descent",
-        confidence_score: 0.98,
-      });
-      setVitals({
-        heart_rate: 118,
-        blood_pressure_systolic: 92,
-        blood_pressure_diastolic: 58,
-        blood_oxygen_sp02: 91,
-      });
-      setAnswers({
-        consciousness: "Yes, but I feel dizzy and slow to respond.",
-        pain_mobility: "I have strong pain in my hip and I cannot stand up safely.",
-        head_injury_blood_thinner: "I hit my head and I take blood thinners.",
-      });
+  function fillScenario(scenarioId) {
+    const scenario = scenarios.find((item) => item.id === scenarioId);
+    if (!scenario) {
       return;
     }
 
-    setEvent({
-      user_id: "user_healthy_001",
-      timestamp: "2024-04-10T12:00:00Z",
-      motion_state: "stumble",
-      confidence_score: 0.62,
-    });
-    setVitals({
-      heart_rate: 82,
-      blood_pressure_systolic: 126,
-      blood_pressure_diastolic: 78,
-      blood_oxygen_sp02: 97,
-    });
-    setAnswers({
-      consciousness: "Yes, I am awake and speaking clearly.",
-      pain_mobility: "I have mild pain but I can move safely.",
-      observation: "I slipped, did not hit my head, and stayed conscious.",
-    });
+    setEvent(scenario.event);
+    setVitals(scenario.vitals);
+    setAnswers(scenario.answers || {});
+    setQuestions([]);
+    setAssessment(null);
+    setError("");
+    setPhase("idle");
   }
 
   function resetFlow() {
@@ -251,6 +229,9 @@ export default function MvpTestPage() {
         action: assessment.action?.recommended,
         fallback_used: assessment.audit?.fallback_used,
         grounding_source: assessment.grounding?.source,
+        retrieval_intents: assessment.grounding?.retrieval_intents,
+        retrieval_queries: assessment.grounding?.queries,
+        retrieval_buckets: Object.keys(assessment.grounding?.buckets || {}),
         dispatch_triggered: assessment.audit?.dispatch_triggered,
         incident_id: assessment.incident_id,
         reasoning_summary: assessment.clinical_assessment?.reasoning_summary,
@@ -276,8 +257,11 @@ export default function MvpTestPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn btn-outline btn-sm" onClick={() => fillPreset("head_injury")}>Load High-Risk Preset</button>
-            <button className="btn btn-outline btn-sm" onClick={() => fillPreset("low_risk")}>Load Low-Risk Preset</button>
+            {scenarios.slice(0, 3).map((scenario) => (
+              <button key={scenario.id} className="btn btn-outline btn-sm" onClick={() => fillScenario(scenario.id)}>
+                {scenario.label}
+              </button>
+            ))}
             <button className="btn btn-outline btn-sm" onClick={resetFlow}>Reset Flow</button>
           </div>
         </div>
@@ -288,6 +272,11 @@ export default function MvpTestPage() {
         {status?.vertex_project && (
           <p style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 6 }}>
             Vertex Config: <span style={{ fontFamily: "'DM Mono', monospace" }}>{status.vertex_project}</span>
+          </p>
+        )}
+        {scenarios.length > 0 && (
+          <p style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 6 }}>
+            Phase 2 scenario pack loaded: <span style={{ fontFamily: "'DM Mono', monospace" }}>{scenarios.length} cases</span>
           </p>
         )}
       </div>
@@ -481,6 +470,19 @@ export default function MvpTestPage() {
                   </div>
                 )}
 
+                {assessment.guidance?.escalation_triggers?.length > 0 && (
+                  <div className="form-group">
+                    <label className="form-label">Escalation Triggers</label>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {assessment.guidance.escalation_triggers.map((trigger, index) => (
+                        <div key={`${index}-${trigger.slice(0, 20)}`} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                          {trigger}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {assessment.grounding?.preview?.length > 0 && (
                   <div className="form-group">
                     <label className="form-label">Grounded Guidance Preview</label>
@@ -488,6 +490,50 @@ export default function MvpTestPage() {
                       {assessment.grounding.preview.map((snippet, index) => (
                         <div key={`${index}-${snippet.slice(0, 20)}`} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
                           {snippet}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {assessment.grounding?.retrieval_intents?.length > 0 && (
+                  <div className="form-group">
+                    <label className="form-label">Retrieval Intents</label>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {assessment.grounding.retrieval_intents.map((intent) => (
+                        <span className="tag" key={intent}>{intent}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {assessment.grounding?.queries?.length > 0 && (
+                  <div className="form-group">
+                    <label className="form-label">Queries Issued</label>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {assessment.grounding.queries.map((query, index) => (
+                        <div key={`${index}-${query}`} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, fontFamily: "'DM Mono', monospace" }}>
+                          {query}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Object.keys(assessment.grounding?.buckets || {}).length > 0 && (
+                  <div className="form-group">
+                    <label className="form-label">Retrieval Buckets</label>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                      {Object.entries(assessment.grounding.buckets).map(([bucket, snippets]) => (
+                        <div key={bucket} style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12 }}>
+                          <div style={{ color: "var(--text)", marginBottom: 8, fontSize: 13, fontWeight: 600 }}>{bucket}</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            {snippets.map((snippet, index) => (
+                              <div key={`${bucket}-${index}`} style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                                {snippet}
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       ))}
                     </div>

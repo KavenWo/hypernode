@@ -1,0 +1,71 @@
+{
+  "description": "Small Phase 2 scenario pack used by the MVP to quickly test retrieval intent selection, query generation, and grounded guidance behavior.",
+  "scenarios": [
+    {
+      "id": "head_injury_blood_thinners",
+      "label": "Head Injury On Blood Thinners",
+      "description": "High-risk fall where the patient hit their head, uses blood thinners, and cannot stand safely.",
+      "event": {
+        "user_id": "user_001",
+        "timestamp": "2024-04-10T12:00:00Z",
+        "motion_state": "rapid_descent",
+        "confidence_score": 0.98
+      },
+      "vitals": {
+        "heart_rate": 118,
+        "blood_pressure_systolic": 92,
+        "blood_pressure_diastolic": 58,
+        "blood_oxygen_sp02": 91
+      },
+      "answers": {
+        "consciousness": "Yes, but I feel dizzy and slow to respond.",
+        "pain_mobility": "I have strong pain in my hip and I cannot stand up safely.",
+        "head_injury_blood_thinner": "I hit my head and I take blood thinners."
+      }
+    },
+    {
+      "id": "abnormal_breathing_bystander",
+      "label": "Bystander Sees Abnormal Breathing",
+      "description": "A bystander reports abnormal breathing and poor responsiveness after a fall.",
+      "event": {
+        "user_id": "user_001",
+        "timestamp": "2024-04-10T12:00:00Z",
+        "motion_state": "no_movement",
+        "confidence_score": 0.95
+      },
+      "vitals": {
+        "heart_rate": 48,
+        "blood_pressure_systolic": 88,
+        "blood_pressure_diastolic": 54,
+        "blood_oxygen_sp02": 86
+      },
+      "answers": {
+        "consciousness": "The patient is barely responding and seems confused.",
+        "pain_mobility": "He is breathing strangely and not answering properly.",
+        "observation": "I am a bystander and I think this is serious."
+      }
+    },
+    {
+      "id": "low_risk_monitoring",
+      "label": "Low-Risk Monitoring",
+      "description": "Lower-risk fall where the patient remained conscious and can move with only mild symptoms.",
+      "event": {
+        "user_id": "user_healthy_001",
+        "timestamp": "2024-04-10T12:00:00Z",
+        "motion_state": "stumble",
+        "confidence_score": 0.62
+      },
+      "vitals": {
+        "heart_rate": 82,
+        "blood_pressure_systolic": 126,
+        "blood_pressure_diastolic": 78,
+        "blood_oxygen_sp02": 97
+      },
+      "answers": {
+        "consciousness": "Yes, I am awake and speaking clearly.",
+        "pain_mobility": "I have mild pain but I can move safely.",
+        "observation": "I slipped, did not hit my head, and stayed conscious."
+      }
+    }
+  ]
+}

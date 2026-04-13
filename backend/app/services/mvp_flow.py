@@ -21,8 +21,9 @@ import os
 
 from fastapi import BackgroundTasks
 
-from agents.bystander.knowledge_base import retrieve_medical_guidance_with_source
-from agents.bystander.rag_agent import build_first_aid_instructions_from_guidance
+from agents.bystander.retrieval_engine import run_phase2_retrieval
+from agents.bystander.retrieval_policy import build_phase2_retrieval_plan
+from agents.bystander.guidance_normalizer import normalize_guidance_from_buckets
 from agents.reasoning.clinical_agent import assess_clinical_severity
 from agents.sentinel.vital_agent import inspect_vitals
 from agents.sentinel.vision_agent import inspect_fall_event
@@ -68,21 +69,15 @@ def build_guidance_query(
     *,
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
+    severity_hint: str | None = None,
 ) -> str:
-    """Choose a focused first-aid retrieval query based on risk signals."""
-    answer_text = " ".join(answer.answer.lower() for answer in patient_answers)
-
-    if "not breathing" in answer_text or "cpr" in answer_text:
-        return "cpr first aid guidance for elderly fall patient"
-    if (
-        patient_profile.blood_thinners
-        or "head" in answer_text
-        or "bleeding" in answer_text
-        or "confusion" in answer_text
-        or "unconscious" in answer_text
-    ):
-        return "fall red flags for elderly patient on blood thinners"
-    return "fall first aid guidance for elderly patient"
+    """Choose the primary query from the lightweight Phase 2 retrieval policy."""
+    retrieval_plan = build_phase2_retrieval_plan(
+        patient_profile=patient_profile,
+        patient_answers=patient_answers,
+        severity_hint=severity_hint,
+    )
+    return retrieval_plan["primary_query"]
 
 
 def get_runtime_status() -> dict:
@@ -133,25 +128,6 @@ def _responder_mode(patient_answers: list[PatientAnswer]) -> str:
     if "bystander" in answer_text or "he is" in answer_text or "she is" in answer_text or "the patient" in answer_text:
         return "bystander"
     return "patient"
-
-
-def _guidance_primary_message(action: str, instructions: list[str]) -> str:
-    if instructions:
-        return instructions[0]
-    if action in {"dispatch_pending_confirmation", "emergency_dispatch"}:
-        return "Stay still and wait for help."
-    if action == "contact_family":
-        return "Stay in a safe position and contact a caregiver or family member."
-    return "Monitor symptoms and avoid standing up too quickly."
-
-
-def _guidance_warnings(red_flags: list[str]) -> list[str]:
-    warnings: list[str] = []
-    if any(flag in red_flags for flag in ["head_strike", "suspected_spinal_injury", "severe_neck_pain", "severe_back_pain", "cannot_stand"]):
-        warnings.append("Do not try to stand or move quickly.")
-    if "severe_bleeding" not in red_flags:
-        warnings.append("Do not ignore worsening breathing, bleeding, or confusion.")
-    return warnings[:2]
 
 
 def _status_for_action(action: str) -> str:
@@ -251,16 +227,21 @@ async def run_mvp_fall_assessment(
     vital_assessment = await inspect_vitals(vitals)
     answers = patient_answers or []
 
-    guidance_query = build_guidance_query(
+    retrieval_plan = build_phase2_retrieval_plan(
         patient_profile=patient_profile,
         patient_answers=answers,
+        severity_hint=vision_assessment.severity_hint,
     )
-    guidance_bundle = retrieve_medical_guidance_with_source(guidance_query)
-    grounded_medical_guidance = guidance_bundle["snippets"]
+    retrieval_result = run_phase2_retrieval(
+        patient_profile=patient_profile,
+        patient_answers=answers,
+        severity_hint=vision_assessment.severity_hint,
+    )
+    grounded_medical_guidance = retrieval_result["guidance_snippets"]
     logger.info(
         "Grounded guidance source for user %s: %s",
         event.user_id,
-        guidance_bundle["source"],
+        retrieval_result["retrieval_source"],
     )
 
     clinical_assessment = await assess_clinical_severity(
@@ -272,8 +253,11 @@ async def run_mvp_fall_assessment(
         grounded_medical_guidance=grounded_medical_guidance,
         patient_answers=answers,
     )
-    instruction_steps = build_first_aid_instructions_from_guidance(grounded_medical_guidance).steps
     next_action = clinical_assessment.recommended_action
+    normalized_guidance = normalize_guidance_from_buckets(
+        buckets=retrieval_result["bucketed_snippets"],
+        action=next_action,
+    )
 
     assessment = MvpAssessment(
         incident_id=None,
@@ -304,21 +288,22 @@ async def run_mvp_fall_assessment(
             countdown_seconds=30 if next_action == "dispatch_pending_confirmation" else None,
         ),
         guidance=GuidanceSummary(
-            primary_message=_guidance_primary_message(
-                next_action,
-                instruction_steps,
-            ),
-            steps=instruction_steps,
-            warnings=_guidance_warnings(clinical_assessment.red_flags),
+            primary_message=normalized_guidance.primary_message,
+            steps=normalized_guidance.steps,
+            warnings=normalized_guidance.warnings,
+            escalation_triggers=normalized_guidance.escalation_triggers,
         ),
         grounding=GroundingSummary(
-            source=guidance_bundle["source"],
-            references=guidance_bundle.get("references", []),
+            source=retrieval_result["retrieval_source"],
+            references=retrieval_result.get("references", []),
             preview=grounded_medical_guidance[:3],
+            retrieval_intents=retrieval_plan["selected_intents"],
+            queries=retrieval_plan["queries"],
+            buckets=retrieval_result["bucketed_snippets"],
         ),
         audit=AuditSummary(
             fallback_used=clinical_assessment.reasoning_summary.startswith(FALLBACK_REASONING_PREFIX),
-            policy_version="phase1_v1",
+            policy_version=retrieval_plan["policy_version"],
             dispatch_triggered=False,
         ),
     )
