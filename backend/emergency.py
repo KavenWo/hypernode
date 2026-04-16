@@ -1,47 +1,26 @@
-"""
-emergency.py — Emergency Dispatch Router
-Golden Hour AI Platform | Backend (FastAPI)
+"""Emergency dispatch router for the standalone backend prototype."""
 
-The nerve centre of the golden hour pipeline. When vitals.py or
-the AI triage agent flags a critical event, this module:
-
-  1. Creates an incident record (Firebase)
-  2. Fetches patient profile for context
-  3. Dispatches THREE actions in parallel (asyncio.gather):
-     a) Twilio  → call 999 + emergency contacts
-     b) Maps    → find nearest capable hospital by ETA
-     c) GPS     → confirm patient location
-  4. Assembles a pre-alert payload
-  5. Fires the hospital webhook
-  6. Enters continuous monitoring mode
-
-Routes:
-  POST /emergency/trigger          → manual/internal trigger
-  GET  /emergency/{incident_id}    → get incident status
-  GET  /emergency/active           → list active incidents
-  POST /emergency/{incident_id}/resolve → close an incident
-"""
+from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException, BackgroundTasks # type: ignore
-from pydantic import BaseModel, Field # type: ignore
-from enum import Enum
 
-# -- Internal imports (uncomment as you wire up each module) --
-# from db.firebase_client import db
-# from integrations.twilio_caller import dispatch_emergency_calls
-# from integrations.maps_router import find_nearest_hospitals
-# from integrations.hospital_webhook import send_pre_alert
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query  # type: ignore
+from pydantic import BaseModel, Field  # type: ignore
+
+try:
+    from google.cloud import firestore  # type: ignore
+except ImportError:  # pragma: no cover - Firestore is optional for local demos
+    firestore = None
+
 
 router = APIRouter(prefix="/emergency", tags=["Emergency"])
+api_router = APIRouter(prefix="/api/v1", tags=["Frontend API"])
 
-
-# ──────────────────────────────────────────────
-# Schemas
-# ──────────────────────────────────────────────
 
 class SeverityLevel(str, Enum):
     YELLOW = "yellow"
@@ -50,11 +29,16 @@ class SeverityLevel(str, Enum):
 
 
 class IncidentStatus(str, Enum):
-    TRIGGERED = "triggered"         # initial state
-    DISPATCHING = "dispatching"     # parallel actions running
-    HOSPITAL_ALERTED = "alerted"    # webhook sent
-    MONITORING = "monitoring"       # continuous vitals streaming
-    RESOLVED = "resolved"          # patient arrived / incident closed
+    IDLE = "idle"
+    ANALYZING = "analyzing"
+    TRIAGE = "triage"
+    REASONING = "reasoning"
+    ACTION_TAKEN = "action_taken"
+    TRIGGERED = "triggered"
+    DISPATCHING = "dispatching"
+    HOSPITAL_ALERTED = "alerted"
+    MONITORING = "monitoring"
+    RESOLVED = "resolved"
 
 
 class Location(BaseModel):
@@ -63,7 +47,6 @@ class Location(BaseModel):
 
 
 class VitalsSnapshot(BaseModel):
-    """Frozen vitals at the moment of emergency trigger."""
     heart_rate: Optional[float] = None
     spo2: Optional[float] = None
     systolic_bp: Optional[float] = None
@@ -72,32 +55,95 @@ class VitalsSnapshot(BaseModel):
 
 
 class AIDecisionSummary(BaseModel):
-    """Subset of TriageDecision passed from the AI agent."""
-    suspected_conditions: list[dict] = []
-    self_help_actions: list[dict] = []
+    suspected_conditions: list[dict] = Field(default_factory=list)
+    self_help_actions: list[dict] = Field(default_factory=list)
     suggested_department: str = "General ED"
-    key_alerts: list[str] = []
-    recommended_prep: list[str] = []
-    contact_priority: list[str] = ["999"]
+    key_alerts: list[str] = Field(default_factory=list)
+    recommended_prep: list[str] = Field(default_factory=lambda: ["Standard emergency intake"])
+    contact_priority: list[str] = Field(default_factory=lambda: ["999"])
     summary: str = ""
 
 
 class EmergencyTriggerRequest(BaseModel):
-    """Payload to trigger an emergency (from vitals.py or manual)."""
     patient_id: str
     severity: SeverityLevel
     vitals: VitalsSnapshot
     location: Optional[Location] = None
-    flags: list[str] = []
+    flags: list[str] = Field(default_factory=list)
     ai_decision: Optional[AIDecisionSummary] = None
 
 
-# ──────────────────────────────────────────────
-# Incident record
-# ──────────────────────────────────────────────
+class EmergencyContact(BaseModel):
+    contact_id: str = Field(default_factory=lambda: f"contact_{uuid4().hex[:8]}")
+    name: str
+    phone: str
+    relationship: str = "emergency_contact"
+    priority: int = 1
+
+
+class PatientProfile(BaseModel):
+    patient_id: str
+    session_uid: str | None = None
+    full_name: str = ""
+    age: int | None = None
+    blood_type: str | None = None
+    allergies: list[str] = Field(default_factory=list)
+    medications: list[str] = Field(default_factory=list)
+    chronic_conditions: list[str] = Field(default_factory=list)
+    emergency_contacts: list[EmergencyContact] = Field(default_factory=list)
+    notes: str = ""
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PatientProfileUpdate(BaseModel):
+    session_uid: str | None = None
+    full_name: str | None = None
+    age: int | None = None
+    blood_type: str | None = None
+    allergies: list[str] | None = None
+    medications: list[str] | None = None
+    chronic_conditions: list[str] | None = None
+    emergency_contacts: list[EmergencyContact] | None = None
+    notes: str | None = None
+
+
+class StartIncidentRequest(BaseModel):
+    session_uid: str
+    patient_id: str
+    event_type: str = "simulation"
+    simulation_trigger: dict = Field(default_factory=dict)
+    video_metadata: dict | None = None
+
+
+class IncidentStatusUpdate(BaseModel):
+    state: IncidentStatus
+    summary: str | None = None
+
+
+class SubmitAnswersRequest(BaseModel):
+    triage_answers: list[dict] = Field(default_factory=list)
+    ai_decision: dict | None = None
+    severity: str | None = None
+    final_action: str | None = None
+
+
+class ExecuteActionRequest(BaseModel):
+    action: str | None = None
+
+
+class HistoryEntry(BaseModel):
+    history_id: str
+    incident_id: str
+    session_uid: str
+    patient_id: str
+    event_type: str
+    severity: str | None = None
+    action_taken: str | None = None
+    summary: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 class Incident(BaseModel):
-    """Full incident record — single source of truth."""
     incident_id: str
     patient_id: str
     severity: SeverityLevel
@@ -105,155 +151,289 @@ class Incident(BaseModel):
     triggered_at: datetime
     vitals_snapshot: VitalsSnapshot
     location: Optional[Location] = None
-    flags: list[str] = []
+    flags: list[str] = Field(default_factory=list)
 
-    # Enriched after profile lookup
     patient_name: str = ""
     blood_type: str = ""
-    allergies: list[str] = []
-    medications: list[str] = []
-    chronic_conditions: list[str] = []
-    emergency_contacts: list[dict] = []
+    allergies: list[str] = Field(default_factory=list)
+    medications: list[str] = Field(default_factory=list)
+    chronic_conditions: list[str] = Field(default_factory=list)
+    emergency_contacts: list[dict] = Field(default_factory=list)
 
-    # AI triage context (if available)
     ai_decision: Optional[AIDecisionSummary] = None
 
-    # Dispatch results (populated after parallel actions)
-    twilio_call_sids: list[str] = []
+    twilio_call_sids: list[str] = Field(default_factory=list)
     twilio_status: str = "pending"
-    nearest_hospitals: list[dict] = []
+    nearest_hospitals: list[dict] = Field(default_factory=list)
     selected_hospital: Optional[dict] = None
     hospital_eta_minutes: Optional[float] = None
     webhook_sent: bool = False
     webhook_response_code: Optional[int] = None
 
-    # Location resolution
-    location_confidence: float = 0.0            # 0.0–1.0
-    location_source: str = "unknown"            # current_wearable_gps / vitals_buffer / home_address
-    location_accuracy_meters: Optional[int] = None
-    location_stale: bool = False
-
-    # Timeline
     profile_fetched_at: Optional[datetime] = None
     dispatch_started_at: Optional[datetime] = None
     dispatch_completed_at: Optional[datetime] = None
     hospital_alerted_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
-
-    # Elapsed time tracking
     total_elapsed_seconds: Optional[float] = None
 
+    session_uid: str | None = None
+    event_type: str = "emergency"
+    simulation_trigger: dict = Field(default_factory=dict)
+    video_metadata: dict | None = None
+    triage_answers: list[dict] = Field(default_factory=list)
+    ai_result: dict | None = None
+    final_action: str | None = None
+    action_taken: dict | None = None
+    execution_locked: bool = False
+    execution_count: int = 0
+    history_logged: bool = False
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-# In-memory store (swap for Firebase in production)
+
 _incidents: dict[str, Incident] = {}
+_patients: dict[str, PatientProfile] = {}
+_history: dict[str, HistoryEntry] = {}
 
 
-# ──────────────────────────────────────────────
-# Patient profile fetch (stub — replace with Firebase)
-# ──────────────────────────────────────────────
+def _get_firestore_client():
+    project_id = os.getenv("FIRESTORE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    if firestore is None or not project_id:
+        return None
+    return firestore.Client(project=project_id)
+
+
+def _strip_none(payload: dict) -> dict:
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _model_payload(model: BaseModel) -> dict:
+    return _strip_none(model.model_dump(mode="json"))
+
+
+def _default_patient_profile(patient_id: str, session_uid: str | None = None) -> PatientProfile:
+    return PatientProfile(
+        patient_id=patient_id,
+        session_uid=session_uid,
+        full_name="Ahmad bin Ibrahim",
+        age=62,
+        blood_type="O+",
+        allergies=["Penicillin"],
+        medications=["Warfarin 5mg", "Metformin 500mg"],
+        chronic_conditions=["Type 2 Diabetes", "Atrial Fibrillation"],
+        emergency_contacts=[
+            EmergencyContact(
+                contact_id="contact_1",
+                name="Siti binti Ahmad",
+                phone="+60123456789",
+                relationship="Wife",
+                priority=1,
+            ),
+            EmergencyContact(
+                contact_id="contact_2",
+                name="Dr. Lee Wei Ming",
+                phone="+60198765432",
+                relationship="Family Doctor",
+                priority=2,
+            ),
+        ],
+    )
+
+
+def _save_patient_profile(profile: PatientProfile) -> PatientProfile:
+    profile.updated_at = datetime.utcnow()
+    _patients[profile.patient_id] = profile
+
+    client = _get_firestore_client()
+    if client is None:
+        return profile
+
+    patient_ref = client.collection("patients").document(profile.patient_id)
+    patient_ref.set(_model_payload(profile), merge=True)
+    patient_ref.collection("medical_profile").document("current").set(_model_payload(profile), merge=True)
+    for contact in profile.emergency_contacts:
+        patient_ref.collection("emergency_contacts").document(contact.contact_id).set(
+            _model_payload(contact),
+            merge=True,
+        )
+    return profile
+
+
+def _load_patient_profile(patient_id: str, session_uid: str | None = None) -> PatientProfile:
+    if patient_id in _patients:
+        return _patients[patient_id]
+
+    client = _get_firestore_client()
+    if client is not None:
+        document = client.collection("patients").document(patient_id).get()
+        if document.exists:
+            profile = PatientProfile.model_validate(document.to_dict())
+            _patients[patient_id] = profile
+            return profile
+
+    profile = _default_patient_profile(patient_id, session_uid)
+    _patients[patient_id] = profile
+    return profile
+
+
+def _update_patient_profile(patient_id: str, updates: dict) -> PatientProfile:
+    profile = _load_patient_profile(patient_id, updates.get("session_uid"))
+    clean_updates = {key: value for key, value in updates.items() if value is not None}
+    updated = profile.model_copy(update=clean_updates)
+    return _save_patient_profile(updated)
+
+
+def _save_incident(incident: Incident) -> Incident:
+    incident.updated_at = datetime.utcnow()
+    _incidents[incident.incident_id] = incident
+
+    client = _get_firestore_client()
+    if client is None:
+        return incident
+
+    payload = _model_payload(incident)
+    client.collection("incidents").document(incident.incident_id).set(payload, merge=True)
+    if incident.session_uid:
+        (
+            client.collection("sessions")
+            .document(incident.session_uid)
+            .collection("incidents")
+            .document(incident.incident_id)
+            .set(payload, merge=True)
+        )
+    return incident
+
+
+def _load_incident(incident_id: str) -> Incident | None:
+    if incident_id in _incidents:
+        return _incidents[incident_id]
+
+    client = _get_firestore_client()
+    if client is None:
+        return None
+
+    document = client.collection("incidents").document(incident_id).get()
+    if not document.exists:
+        return None
+    incident = Incident.model_validate(document.to_dict())
+    _incidents[incident_id] = incident
+    return incident
+
+
+def _incident_or_404(incident_id: str) -> Incident:
+    incident = _load_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
+
+
+def _normalize_action(action: str | None) -> str:
+    normalized = (action or "monitor").strip().lower()
+    aliases = {
+        "monitoring": "monitor",
+        "contact_family": "call_family",
+        "notify_family": "call_family",
+        "emergency_dispatch": "call_ambulance",
+        "dispatch": "call_ambulance",
+        "ambulance": "call_ambulance",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _history_summary(incident: Incident) -> str:
+    if incident.action_taken and incident.action_taken.get("message"):
+        return str(incident.action_taken["message"])[:240]
+    if incident.ai_result and incident.ai_result.get("reasoning"):
+        return str(incident.ai_result["reasoning"])[:240]
+    if incident.ai_decision and incident.ai_decision.summary:
+        return incident.ai_decision.summary[:240]
+    return f"{incident.event_type} incident completed with action {incident.final_action or 'none'}."
+
+
+def _append_history(incident: Incident, summary: str | None = None) -> HistoryEntry:
+    session_uid = incident.session_uid or "unknown_session"
+    entry = HistoryEntry(
+        history_id=incident.incident_id,
+        incident_id=incident.incident_id,
+        session_uid=session_uid,
+        patient_id=incident.patient_id,
+        event_type=incident.event_type,
+        severity=incident.severity.value if isinstance(incident.severity, SeverityLevel) else str(incident.severity),
+        action_taken=incident.final_action,
+        summary=summary or _history_summary(incident),
+    )
+    _history[entry.history_id] = entry
+    incident.history_logged = True
+
+    client = _get_firestore_client()
+    if client is not None:
+        payload = _model_payload(entry)
+        client.collection("history").document(entry.history_id).set(payload, merge=True)
+        (
+            client.collection("sessions")
+            .document(session_uid)
+            .collection("history")
+            .document(entry.history_id)
+            .set(payload, merge=True)
+        )
+        (
+            client.collection("patients")
+            .document(incident.patient_id)
+            .collection("history")
+            .document(entry.history_id)
+            .set(payload, merge=True)
+        )
+    _save_incident(incident)
+    return entry
+
 
 async def _fetch_patient_profile(patient_id: str) -> dict:
-    """
-    Fetch patient profile from Firebase.
-    Replace this stub with actual Firebase lookup.
-    """
-    # Simulated profile for demo
-    # In production:
-    # doc = db.collection("patients").document(patient_id).get()
-    # return doc.to_dict()
+    profile = _load_patient_profile(patient_id)
     return {
-        "name": "Ahmad bin Ibrahim",
-        "age": 62,
-        "sex": "Male",
-        "blood_type": "O+",
-        "allergies": ["Penicillin"],
-        "medications": ["Warfarin 5mg", "Metformin 500mg"],
-        "chronic_conditions": ["Type 2 Diabetes", "Atrial Fibrillation"],
+        "name": profile.full_name,
+        "age": profile.age,
+        "blood_type": profile.blood_type,
+        "allergies": profile.allergies,
+        "medications": profile.medications,
+        "chronic_conditions": profile.chronic_conditions,
         "emergency_contacts": [
-            {"name": "Siti binti Ahmad", "phone": "+60123456789", "relation": "Wife"},
-            {"name": "Dr. Lee Wei Ming", "phone": "+60198765432", "relation": "Family Doctor"},
+            {
+                "name": contact.name,
+                "phone": contact.phone,
+                "relation": contact.relationship,
+            }
+            for contact in profile.emergency_contacts
         ],
     }
 
 
-# ──────────────────────────────────────────────
-# Parallel dispatch actions
-# ──────────────────────────────────────────────
+def _value_from_source(source: object, key: str, default):
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
 
 async def _dispatch_twilio(incident: Incident) -> dict:
-    """
-    Call 999 and emergency contacts via Twilio.
-    Returns call SIDs and status.
-    """
-    # Build TTS message for 999
-    tts_message = (
-        f"Emergency medical alert. "
-        f"Patient {incident.patient_name}, age {62}, "
-        f"is experiencing a medical emergency. "
-        f"Severity: {incident.severity.value}. "
-    )
-
-    if incident.ai_decision and incident.ai_decision.suspected_conditions:
-        condition = incident.ai_decision.suspected_conditions[0].get("condition", "Unknown")
-        tts_message += f"Suspected condition: {condition}. "
-
-    if incident.location:
-        tts_message += (
-            f"Patient location: latitude {incident.location.lat:.4f}, "
-            f"longitude {incident.location.lng:.4f}. "
-        )
-
-    tts_message += "Please dispatch ambulance immediately."
-
-    # Determine call order from AI decision or default
     contact_priority = ["999"]
     if incident.ai_decision:
         contact_priority = incident.ai_decision.contact_priority
     elif incident.emergency_contacts:
-        contact_priority = ["999"] + [c["phone"] for c in incident.emergency_contacts]
-
-    # -- Actual Twilio calls (uncomment when wired) --
-    # call_sids = await dispatch_emergency_calls(
-    #     numbers=contact_priority,
-    #     tts_message=tts_message,
-    #     patient_id=incident.patient_id,
-    # )
-
-    # Simulated response for demo
-    call_sids = [f"CA{uuid4().hex[:16]}" for _ in contact_priority]
-
-    print(f"   📞 Twilio: calling {contact_priority}")
-    print(f"   📞 TTS: {tts_message[:80]}...")
+        contact_priority = ["999"] + [contact["phone"] for contact in incident.emergency_contacts]
 
     return {
-        "call_sids": call_sids,
+        "call_sids": [f"CA{uuid4().hex[:16]}" for _ in contact_priority],
         "status": "calls_initiated",
         "numbers_called": contact_priority,
     }
 
 
 async def _dispatch_maps(incident: Incident) -> dict:
-    """
-    Find nearest hospitals by drive-time ETA.
-    Filters by capability if AI suggests a department.
-    """
     if not incident.location:
-        return {"hospitals": [], "error": "No patient location available"}
+        return {"hospitals": [], "selected": None, "eta_minutes": None}
 
-    # Determine required capability from AI decision
-    required_dept = "General ED"
-    if incident.ai_decision:
-        required_dept = incident.ai_decision.suggested_department
-
-    # -- Actual Maps API call (uncomment when wired) --
-    # hospitals = await find_nearest_hospitals(
-    #     lat=incident.location.lat,
-    #     lng=incident.location.lng,
-    #     required_department=required_dept,
-    #     max_results=5,
-    # )
-
-    # Simulated response for demo (KL area hospitals)
+    required_dept = incident.ai_decision.suggested_department if incident.ai_decision else "General ED"
     hospitals = [
         {
             "name": "Hospital Kuala Lumpur",
@@ -262,7 +442,6 @@ async def _dispatch_maps(incident: Incident) -> dict:
             "eta_minutes": 8.2,
             "distance_km": 4.1,
             "departments": ["General ED", "Cardiology", "Trauma"],
-            "has_cath_lab": True,
         },
         {
             "name": "Institut Jantung Negara",
@@ -271,234 +450,45 @@ async def _dispatch_maps(incident: Incident) -> dict:
             "eta_minutes": 10.5,
             "distance_km": 5.3,
             "departments": ["Cardiology", "Cardiac Surgery"],
-            "has_cath_lab": True,
-        },
-        {
-            "name": "Hospital Universiti Kebangsaan Malaysia",
-            "lat": 3.0896,
-            "lng": 101.7250,
-            "eta_minutes": 14.1,
-            "distance_km": 8.7,
-            "departments": ["General ED", "Neurology", "Trauma"],
-            "has_cath_lab": False,
         },
     ]
-
-    # Select best hospital: match department, then sort by ETA
-    matched = [h for h in hospitals if required_dept in h.get("departments", [])]
-    if not matched:
-        matched = hospitals  # fall back to all if no match
-    best = sorted(matched, key=lambda h: h["eta_minutes"])[0]
-
-    print(f"   🗺️  Maps: {len(hospitals)} hospitals found, best = {best['name']} ({best['eta_minutes']} min)")
-
-    return {
-        "hospitals": hospitals,
-        "selected": best,
-        "eta_minutes": best["eta_minutes"],
-        "required_department": required_dept,
-    }
+    matched = [hospital for hospital in hospitals if required_dept in hospital["departments"]]
+    selected = sorted(matched or hospitals, key=lambda hospital: hospital["eta_minutes"])[0]
+    return {"hospitals": hospitals, "selected": selected, "eta_minutes": selected["eta_minutes"]}
 
 
 async def _confirm_location(incident: Incident) -> dict:
-    """
-    Three-tier location resolver with staleness + confidence scoring.
-
-    Tier 1: Current GPS from wearable payload (best, <30s old)
-    Tier 2: Last known GPS from vitals buffer (fallback, may be minutes old)
-    Tier 3: Home address geocode from patient profile (last resort)
-
-    Returns:
-      lat, lng, confidence (0-1), source, stale (bool),
-      age_seconds, accuracy_meters (estimated)
-    """
-    now = datetime.utcnow()
-
-    # ── Tier 1: Current payload GPS ──
     if incident.location:
-        age = (now - incident.triggered_at).total_seconds()
-        if age < 60:
-            # Fresh GPS — high confidence
-            return {
-                "lat": incident.location.lat,
-                "lng": incident.location.lng,
-                "confidence": 0.95,
-                "source": "current_wearable_gps",
-                "stale": False,
-                "age_seconds": round(age, 1),
-                "accuracy_meters": 5,
-            }
-        else:
-            # GPS present but getting old — medium confidence
-            return {
-                "lat": incident.location.lat,
-                "lng": incident.location.lng,
-                "confidence": max(0.4, 0.95 - (age / 600) * 0.5),
-                "source": "current_wearable_gps",
-                "stale": age > 120,
-                "age_seconds": round(age, 1),
-                "accuracy_meters": 5 + int(age * 0.5),
-            }
+        return {"lat": incident.location.lat, "lng": incident.location.lng}
+    return {"lat": 3.1390, "lng": 101.6869}
 
-    # ── Tier 2: Last known from vitals buffer ──
-    # In production, query the rolling buffer for the most recent
-    # reading that included GPS coordinates
-    # recent_with_gps = [
-    #     r for r in _vitals_buffer.get(incident.patient_id, [])
-    #     if r.get("location") is not None
-    # ]
-    # if recent_with_gps:
-    #     last = recent_with_gps[-1]
-    #     age = (now - last["timestamp"]).total_seconds()
-    #     return {
-    #         "lat": last["location"]["lat"],
-    #         "lng": last["location"]["lng"],
-    #         "confidence": max(0.2, 0.8 - (age / 900) * 0.6),
-    #         "source": "vitals_buffer_last_known",
-    #         "stale": True,
-    #         "age_seconds": round(age, 1),
-    #         "accuracy_meters": 10 + int(age * 2),
-    #     }
-
-    # Simulated Tier 2 for demo
-    print("   📍 No current GPS — falling back to last known location")
-
-    # ── Tier 3: Home address geocode ──
-    # In production:
-    # profile = await _fetch_patient_profile(incident.patient_id)
-    # home_address = profile.get("home_address")
-    # if home_address:
-    #     coords = await geocode_address(home_address)
-    #     return {
-    #         "lat": coords["lat"],
-    #         "lng": coords["lng"],
-    #         "confidence": 0.3,
-    #         "source": "home_address_geocode",
-    #         "stale": True,
-    #         "age_seconds": None,
-    #         "accuracy_meters": 200,
-    #     }
-
-    # Final fallback: last registered location (demo default — KL city centre)
-    print("   📍 No GPS history — using registered home address")
-    return {
-        "lat": 3.1390,
-        "lng": 101.6869,
-        "confidence": 0.2,
-        "source": "home_address_fallback",
-        "stale": True,
-        "age_seconds": None,
-        "accuracy_meters": 500,
-    }
-
-
-# ──────────────────────────────────────────────
-# Hospital webhook
-# ──────────────────────────────────────────────
 
 async def _fire_hospital_webhook(incident: Incident) -> dict:
-    """
-    Send pre-alert payload to the selected hospital's system.
-    """
     if not incident.selected_hospital:
-        return {"sent": False, "error": "No hospital selected"}
-
-    # Build the pre-alert payload the ER team will see
-    pre_alert = {
-        "incident_id": incident.incident_id,
-        "severity": incident.severity.value,
-        "eta_minutes": incident.hospital_eta_minutes,
-
-        # Patient identity
-        "patient_name": incident.patient_name,
-        "blood_type": incident.blood_type,
-
-        # Medical context
-        "allergies": incident.allergies,
-        "medications": incident.medications,
-        "chronic_conditions": incident.chronic_conditions,
-
-        # Current vitals
-        "vitals": {
-            "heart_rate": incident.vitals_snapshot.heart_rate,
-            "spo2": incident.vitals_snapshot.spo2,
-            "systolic_bp": incident.vitals_snapshot.systolic_bp,
-            "body_temp": incident.vitals_snapshot.body_temp,
+        return {"sent": False, "status_code": None}
+    return {
+        "sent": True,
+        "status_code": 200,
+        "payload": {
+            "incident_id": incident.incident_id,
+            "severity": incident.severity.value,
+            "eta_minutes": incident.hospital_eta_minutes,
+            "patient_name": incident.patient_name,
+            "vitals": incident.vitals_snapshot.model_dump(),
+            "timestamp": datetime.utcnow().isoformat(),
         },
-
-        # AI-enriched context
-        "suspected_conditions": (
-            incident.ai_decision.suspected_conditions
-            if incident.ai_decision else []
-        ),
-        "suggested_department": (
-            incident.ai_decision.suggested_department
-            if incident.ai_decision else "General ED"
-        ),
-        "recommended_prep": (
-            incident.ai_decision.recommended_prep
-            if incident.ai_decision else ["Standard emergency intake"]
-        ),
-        "key_alerts": (
-            incident.ai_decision.key_alerts
-            if incident.ai_decision else []
-        ),
-
-        # Location (with confidence so hospital knows reliability)
-        "patient_location": (
-            {
-                "lat": incident.location.lat,
-                "lng": incident.location.lng,
-                "confidence": incident.location_confidence,
-                "source": incident.location_source,
-                "accuracy_meters": incident.location_accuracy_meters,
-                "stale": incident.location_stale,
-            }
-            if incident.location else None
-        ),
-
-        "timestamp": datetime.utcnow().isoformat(),
     }
 
-    # -- Actual webhook call (uncomment when wired) --
-    # response = await send_pre_alert(
-    #     hospital_endpoint=incident.selected_hospital.get("webhook_url"),
-    #     payload=pre_alert,
-    # )
-    # return {"sent": True, "status_code": response.status_code}
 
-    print(f"   🏥 Webhook → {incident.selected_hospital['name']}")
-    print(f"   🏥 Payload keys: {list(pre_alert.keys())}")
-
-    return {"sent": True, "status_code": 200, "payload": pre_alert}
-
-
-# ──────────────────────────────────────────────
-# Main dispatch orchestrator
-# ──────────────────────────────────────────────
-
-async def _run_dispatch(incident_id: str):
-    """
-    Full emergency dispatch pipeline.
-    Runs as a background task after the trigger endpoint responds.
-
-    Timeline:
-      t=0s   Incident created
-      t≈0.2s Patient profile fetched
-      t≈2s   Parallel dispatch (Twilio + Maps + GPS) — asyncio.gather
-      t≈4s   Hospital selected, pre-alert payload assembled
-      t≈5s   Hospital webhook fired
-      t≈6s   Monitoring mode active
-    """
-    incident = _incidents.get(incident_id)
+async def _run_dispatch(incident_id: str) -> None:
+    incident = _load_incident(incident_id)
     if not incident:
         return
 
     try:
-        # ── Step 1: Fetch patient profile ──
         incident.status = IncidentStatus.DISPATCHING
+        _save_incident(incident)
         profile = await _fetch_patient_profile(incident.patient_id)
-
         incident.patient_name = profile.get("name", "Unknown")
         incident.blood_type = profile.get("blood_type", "Unknown")
         incident.allergies = profile.get("allergies", [])
@@ -506,240 +496,331 @@ async def _run_dispatch(incident_id: str):
         incident.chronic_conditions = profile.get("chronic_conditions", [])
         incident.emergency_contacts = profile.get("emergency_contacts", [])
         incident.profile_fetched_at = datetime.utcnow()
+        _save_incident(incident)
 
-        print(f"\n{'='*60}")
-        print(f"🚨 EMERGENCY DISPATCH — Incident {incident_id[:8]}...")
-        print(f"   Patient: {incident.patient_name}")
-        print(f"   Severity: {incident.severity.value}")
-        print(f"   Flags: {incident.flags}")
-        if incident.ai_decision:
-            print(f"   AI summary: {incident.ai_decision.summary}")
-        print(f"{'='*60}")
-
-        # ── Step 2: Parallel dispatch ──
         incident.dispatch_started_at = datetime.utcnow()
-
         twilio_result, maps_result, location_result = await asyncio.gather(
             _dispatch_twilio(incident),
             _dispatch_maps(incident),
             _confirm_location(incident),
-            return_exceptions=True,
         )
 
-        # Process Twilio result
-        if isinstance(twilio_result, Exception):
-            print(f"   ❌ Twilio error: {twilio_result}")
-            incident.twilio_status = "error"
-        else:
-            incident.twilio_call_sids = twilio_result.get("call_sids", [])
-            incident.twilio_status = twilio_result.get("status", "unknown")
-
-        # Process Maps result
-        if isinstance(maps_result, Exception):
-            print(f"   ❌ Maps error: {maps_result}")
-        else:
-            incident.nearest_hospitals = maps_result.get("hospitals", [])
-            incident.selected_hospital = maps_result.get("selected")
-            incident.hospital_eta_minutes = maps_result.get("eta_minutes")
-
-        # Process location confirmation
-        if isinstance(location_result, Exception):
-            print(f"   ❌ Location error: {location_result}")
-        else:
-            incident.location = Location(
-                lat=location_result["lat"],
-                lng=location_result["lng"],
-            )
-            incident.location_confidence = location_result.get("confidence", 0.0)
-            incident.location_source = location_result.get("source", "unknown")
-            incident.location_accuracy_meters = location_result.get("accuracy_meters")
-            incident.location_stale = location_result.get("stale", False)
-
-            confidence_pct = int(incident.location_confidence * 100)
-            print(f"   📍 Location: {incident.location_source} "
-                  f"(confidence {confidence_pct}%, "
-                  f"±{incident.location_accuracy_meters}m"
-                  f"{', STALE' if incident.location_stale else ''})")
-
+        incident.twilio_call_sids = twilio_result.get("call_sids", [])
+        incident.twilio_status = twilio_result.get("status", "unknown")
+        incident.nearest_hospitals = maps_result.get("hospitals", [])
+        incident.selected_hospital = maps_result.get("selected")
+        incident.hospital_eta_minutes = maps_result.get("eta_minutes")
+        incident.location = Location(lat=location_result["lat"], lng=location_result["lng"])
         incident.dispatch_completed_at = datetime.utcnow()
 
-        # ── Step 3: Fire hospital webhook ──
         webhook_result = await _fire_hospital_webhook(incident)
         incident.webhook_sent = webhook_result.get("sent", False)
         incident.webhook_response_code = webhook_result.get("status_code")
         incident.hospital_alerted_at = datetime.utcnow()
-        incident.status = IncidentStatus.HOSPITAL_ALERTED
-
-        # Calculate total elapsed time
-        elapsed = (incident.hospital_alerted_at - incident.triggered_at).total_seconds()
-        incident.total_elapsed_seconds = round(elapsed, 2)
-
-        print(f"\n   ✅ DISPATCH COMPLETE in {elapsed:.1f}s")
-        print(f"   🏥 Hospital: {incident.selected_hospital['name'] if incident.selected_hospital else 'None'}")
-        print(f"   ⏱️  ETA: {incident.hospital_eta_minutes} minutes")
-        print(f"{'='*60}\n")
-
-        # ── Step 4: Enter monitoring mode ──
+        incident.total_elapsed_seconds = round(
+            (incident.hospital_alerted_at - incident.triggered_at).total_seconds(),
+            2,
+        )
         incident.status = IncidentStatus.MONITORING
+        incident.action_taken = {
+            "action": incident.final_action or "call_ambulance",
+            "executed": True,
+            "message": "Emergency dispatch simulation completed.",
+            "twilio_status": incident.twilio_status,
+            "hospital": incident.selected_hospital.get("name") if incident.selected_hospital else None,
+        }
+        incident.execution_locked = True
+        incident.execution_count = max(incident.execution_count, 1)
+        _save_incident(incident)
+        _append_history(incident)
+    except Exception:
+        incident.status = IncidentStatus.TRIGGERED
+        _save_incident(incident)
 
-        # In production: start streaming live vitals to hospital
-        # await _start_vitals_stream(incident)
-
-        # Persist to Firebase
-        # db.collection("incidents").document(incident_id).set(incident.dict())
-
-    except Exception as e:
-        print(f"   ❌ DISPATCH FAILED: {e}")
-        incident.status = IncidentStatus.TRIGGERED  # allow retry
-
-
-# ──────────────────────────────────────────────
-# Public API: trigger_emergency (called by vitals.py)
-# ──────────────────────────────────────────────
 
 async def trigger_emergency(
     patient_id: str,
     severity: SeverityLevel,
     vitals: dict,
     flags: list[str],
-    ai_decision: Optional[dict] = None,
+    ai_decision: Optional[object] = None,
     location: Optional[dict] = None,
     background_tasks: Optional[BackgroundTasks] = None,
 ) -> str:
-    """
-    Entry point called by vitals.py or the AI triage agent.
-    Creates an incident and kicks off the dispatch pipeline.
-
-    Returns the incident_id for tracking.
-    """
     incident_id = f"INC-{uuid4().hex[:12].upper()}"
-    now = datetime.utcnow()
-
-    # Build AI decision summary if provided
-    ai_summary = None
-    if ai_decision:
-        ai_summary = AIDecisionSummary(
-            suspected_conditions=getattr(ai_decision, "suspected_conditions", []),
-            self_help_actions=getattr(ai_decision, "self_help_actions", []),
-            suggested_department=getattr(
-                getattr(ai_decision, "hospital_context", None),
-                "suggested_department", "General ED"
+    hospital_context = _value_from_source(ai_decision, "hospital_context", None)
+    ai_summary = (
+        AIDecisionSummary(
+            suspected_conditions=_value_from_source(ai_decision, "suspected_conditions", []),
+            self_help_actions=_value_from_source(ai_decision, "self_help_actions", []),
+            suggested_department=_value_from_source(
+                hospital_context,
+                "suggested_department",
+                _value_from_source(ai_decision, "suggested_department", "General ED"),
             ),
-            key_alerts=getattr(
-                getattr(ai_decision, "hospital_context", None),
-                "key_alerts", []
-            ),
-            recommended_prep=getattr(
-                getattr(ai_decision, "hospital_context", None),
-                "recommended_prep", []
-            ),
-            contact_priority=getattr(ai_decision, "contact_priority", ["999"]),
-            summary=getattr(ai_decision, "summary", ""),
+            key_alerts=_value_from_source(hospital_context, "key_alerts", []),
+            recommended_prep=_value_from_source(hospital_context, "recommended_prep", []),
+            contact_priority=_value_from_source(ai_decision, "contact_priority", ["999"]),
+            summary=_value_from_source(ai_decision, "summary", ""),
         )
+        if ai_decision
+        else None
+    )
 
     incident = Incident(
         incident_id=incident_id,
         patient_id=patient_id,
         severity=severity,
         status=IncidentStatus.TRIGGERED,
-        triggered_at=now,
+        triggered_at=datetime.utcnow(),
         vitals_snapshot=VitalsSnapshot(**vitals) if isinstance(vitals, dict) else vitals,
         location=Location(**location) if location and isinstance(location, dict) else location,
         flags=flags,
         ai_decision=ai_summary,
+        final_action="call_ambulance" if severity == SeverityLevel.RED else "call_family",
     )
+    _save_incident(incident)
 
-    _incidents[incident_id] = incident
-
-    # Fire dispatch as background task
     if background_tasks:
         background_tasks.add_task(_run_dispatch, incident_id)
     else:
-        # Direct call (from simulator or internal trigger)
         asyncio.create_task(_run_dispatch(incident_id))
 
     return incident_id
 
-
-# ──────────────────────────────────────────────
-# Routes
-# ──────────────────────────────────────────────
 
 @router.post("/trigger")
 async def trigger_emergency_route(
     req: EmergencyTriggerRequest,
     background_tasks: BackgroundTasks,
 ):
-    """
-    Manually trigger an emergency (for testing / demo).
-    In production, this is called internally by vitals.py.
-    """
     incident_id = await trigger_emergency(
         patient_id=req.patient_id,
         severity=req.severity,
-        vitals=req.vitals.dict(),
+        vitals=req.vitals.model_dump(),
         flags=req.flags,
         ai_decision=req.ai_decision,
-        location=req.location.dict() if req.location else None,
+        location=req.location.model_dump() if req.location else None,
         background_tasks=background_tasks,
     )
+    return {"incident_id": incident_id, "status": "triggered"}
 
-    return {
-        "incident_id": incident_id,
-        "status": "triggered",
-        "message": f"Emergency dispatch initiated for patient {req.patient_id}",
-    }
+
+@router.get("/")
+async def list_active_incidents():
+    active = [
+        incident
+        for incident in _incidents.values()
+        if incident.status != IncidentStatus.RESOLVED
+    ]
+    return {"active_count": len(active), "incidents": active}
+
+
+@router.get("/active")
+async def list_active_incidents_alias():
+    return await list_active_incidents()
 
 
 @router.get("/{incident_id}")
 async def get_incident(incident_id: str):
-    """Get full incident details and current status."""
     incident = _incidents.get(incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
 
 
-@router.get("/")
-async def list_active_incidents():
-    """List all active (non-resolved) incidents."""
-    active = {
-        iid: inc for iid, inc in _incidents.items()
-        if inc.status != IncidentStatus.RESOLVED
-    }
-    return {
-        "active_count": len(active),
-        "incidents": [
-            {
-                "incident_id": inc.incident_id,
-                "patient_id": inc.patient_id,
-                "severity": inc.severity.value,
-                "status": inc.status.value,
-                "triggered_at": inc.triggered_at.isoformat(),
-                "hospital": inc.selected_hospital.get("name") if inc.selected_hospital else None,
-                "eta_minutes": inc.hospital_eta_minutes,
-                "elapsed_seconds": inc.total_elapsed_seconds,
-            }
-            for inc in active.values()
-        ],
-    }
-
-
 @router.post("/{incident_id}/resolve")
 async def resolve_incident(incident_id: str):
-    """Mark an incident as resolved (patient arrived / false alarm)."""
     incident = _incidents.get(incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
-
     incident.status = IncidentStatus.RESOLVED
     incident.resolved_at = datetime.utcnow()
-
     total = (incident.resolved_at - incident.triggered_at).total_seconds()
-
     return {
         "incident_id": incident_id,
         "status": "resolved",
         "total_golden_hour_seconds": round(total, 1),
-        "golden_hour_remaining_minutes": round((3600 - total) / 60, 1),
     }
+
+
+def _create_lifecycle_incident(request: StartIncidentRequest) -> Incident:
+    _load_patient_profile(request.patient_id, request.session_uid)
+    incident = Incident(
+        incident_id=f"INC-{uuid4().hex[:12].upper()}",
+        patient_id=request.patient_id,
+        session_uid=request.session_uid,
+        severity=SeverityLevel.YELLOW,
+        status=IncidentStatus.ANALYZING,
+        triggered_at=datetime.utcnow(),
+        vitals_snapshot=VitalsSnapshot(),
+        event_type=request.event_type,
+        simulation_trigger=request.simulation_trigger,
+        video_metadata=request.video_metadata,
+    )
+    return _save_incident(incident)
+
+
+def _simulate_action(action: str, incident: Incident) -> dict:
+    if action == "monitor":
+        return {
+            "action": action,
+            "executed": True,
+            "message": "Monitoring continued. No external notification sent.",
+        }
+    if action == "call_family":
+        profile = _load_patient_profile(incident.patient_id, incident.session_uid)
+        contacts = [contact.model_dump(mode="json") for contact in profile.emergency_contacts]
+        return {
+            "action": action,
+            "executed": True,
+            "message": "Simulated family notification sent.",
+            "contacts": contacts,
+        }
+    if action == "call_ambulance":
+        return {
+            "action": action,
+            "executed": True,
+            "message": f"Simulated ambulance call created for incident {incident.incident_id}.",
+            "emergency_number": "999",
+        }
+    return {
+        "action": action,
+        "executed": True,
+        "message": f"Recorded action {action}.",
+    }
+
+
+@api_router.get("/patients/{patient_id}/profile", response_model=PatientProfile)
+async def get_current_profile(
+    patient_id: str,
+    session_uid: str | None = Query(default=None),
+) -> PatientProfile:
+    """Read the current patient profile."""
+    return _load_patient_profile(patient_id, session_uid)
+
+
+@api_router.patch("/patients/{patient_id}/profile", response_model=PatientProfile)
+async def update_current_profile(
+    patient_id: str,
+    request: PatientProfileUpdate,
+) -> PatientProfile:
+    """Update patient details and emergency contacts."""
+    return _update_patient_profile(patient_id, request.model_dump(exclude_unset=True))
+
+
+@api_router.post("/incidents", response_model=Incident)
+async def start_incident(request: StartIncidentRequest) -> Incident:
+    """Create a new simulation incident and attach it to the session/user."""
+    return _create_lifecycle_incident(request)
+
+
+@api_router.get("/incidents/{incident_id}", response_model=Incident)
+async def get_lifecycle_incident(incident_id: str) -> Incident:
+    """Return the stored incident lifecycle record."""
+    return _incident_or_404(incident_id)
+
+
+@api_router.get("/incidents/{incident_id}/result", response_model=Incident)
+async def get_incident_result(incident_id: str) -> Incident:
+    """Return the incident result, including AI decision and final action."""
+    return _incident_or_404(incident_id)
+
+
+@api_router.patch("/incidents/{incident_id}/status", response_model=Incident)
+async def update_lifecycle_status(
+    incident_id: str,
+    request: IncidentStatusUpdate,
+) -> Incident:
+    """Update incident status and log resolved runs to history."""
+    incident = _incident_or_404(incident_id)
+    incident.status = request.state
+    if request.state == IncidentStatus.RESOLVED:
+        incident.resolved_at = datetime.utcnow()
+    _save_incident(incident)
+    if request.state == IncidentStatus.RESOLVED and not incident.history_logged:
+        _append_history(incident, request.summary)
+    return incident
+
+
+@api_router.post("/incidents/{incident_id}/answers", response_model=Incident)
+async def submit_triage_answers(
+    incident_id: str,
+    request: SubmitAnswersRequest,
+) -> Incident:
+    """Store triage answers, AI result, severity, and final recommended action."""
+    incident = _incident_or_404(incident_id)
+    incident.status = IncidentStatus.REASONING
+    incident.triage_answers = request.triage_answers
+    incident.ai_result = request.ai_decision
+    if request.ai_decision:
+        incident.ai_decision = AIDecisionSummary(
+            suspected_conditions=request.ai_decision.get("suspected_conditions", []),
+            self_help_actions=request.ai_decision.get("self_help_actions", []),
+            suggested_department=request.ai_decision.get("suggested_department", "General ED"),
+            key_alerts=request.ai_decision.get("key_alerts", []),
+            recommended_prep=request.ai_decision.get("recommended_prep", ["Standard emergency intake"]),
+            contact_priority=request.ai_decision.get("contact_priority", ["999"]),
+            summary=request.ai_decision.get("summary", request.ai_decision.get("reasoning", "")),
+        )
+    if request.severity:
+        incident.severity = SeverityLevel.RED if request.severity in {"critical", "red", "high"} else SeverityLevel.AMBER
+    incident.final_action = _normalize_action(request.final_action or (request.ai_decision or {}).get("action"))
+    return _save_incident(incident)
+
+
+@api_router.post("/incidents/{incident_id}/triage", response_model=Incident)
+async def submit_triage_answers_alias(
+    incident_id: str,
+    request: SubmitAnswersRequest,
+) -> Incident:
+    """Alias for the frontend triage-answer submission step."""
+    return await submit_triage_answers(incident_id, request)
+
+
+@api_router.post("/incidents/{incident_id}/execute", response_model=Incident)
+async def execute_incident_action(
+    incident_id: str,
+    request: ExecuteActionRequest,
+) -> Incident:
+    """Execute the final action once. Repeated calls return the locked record."""
+    incident = _incident_or_404(incident_id)
+    if incident.execution_locked or incident.action_taken:
+        return incident
+
+    action = _normalize_action(request.action or incident.final_action)
+    incident.final_action = action
+    incident.action_taken = _simulate_action(action, incident)
+    incident.execution_locked = True
+    incident.execution_count += 1
+    incident.status = IncidentStatus.MONITORING if action == "monitor" else IncidentStatus.ACTION_TAKEN
+    _save_incident(incident)
+    if not incident.history_logged:
+        _append_history(incident)
+    return incident
+
+
+@api_router.get("/history", response_model=list[HistoryEntry])
+async def fetch_history(
+    session_uid: str | None = Query(default=None),
+    patient_id: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> list[HistoryEntry]:
+    """Fetch previous emergency runs for the History view."""
+    client = _get_firestore_client()
+    if client is not None:
+        query = client.collection("history")
+        if session_uid:
+            query = query.where("session_uid", "==", session_uid)
+        if patient_id:
+            query = query.where("patient_id", "==", patient_id)
+        entries = [HistoryEntry.model_validate(document.to_dict()) for document in query.limit(limit).stream()]
+    else:
+        entries = list(_history.values())
+        if session_uid:
+            entries = [entry for entry in entries if entry.session_uid == session_uid]
+        if patient_id:
+            entries = [entry for entry in entries if entry.patient_id == patient_id]
+
+    entries.sort(key=lambda entry: entry.created_at, reverse=True)
+    return entries[:limit]
