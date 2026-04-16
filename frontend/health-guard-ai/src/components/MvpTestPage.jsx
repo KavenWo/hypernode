@@ -66,11 +66,11 @@ function ChatBubble({ role, text }) {
       <div
         style={{
           maxWidth: "88%",
-          background: isAssistant ? "linear-gradient(135deg, #fff4dd 0%, #ffe4ba 100%)" : "linear-gradient(135deg, #f5f7fb 0%, #e5ebf5 100%)",
+          background: isAssistant ? "linear-gradient(135deg, var(--surface) 0%, #fef3c7 100%)" : "linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)",
           border: "1px solid var(--border)",
-          borderRadius: 18,
-          padding: "12px 14px",
-          boxShadow: "0 10px 24px rgba(15, 23, 42, 0.06)",
+          borderRadius: 20,
+          padding: "12px 16px",
+          boxShadow: "var(--shadow)",
         }}
       >
         <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>
@@ -105,8 +105,6 @@ export default function MvpTestPage() {
   const [sessionId, setSessionId] = useState("");
   const [status, setStatus] = useState(null);
   const [patients, setPatients] = useState([]);
-  const [scenarios, setScenarios] = useState([]);
-  const [selectedScenarioId, setSelectedScenarioId] = useState("");
   const [messages, setMessages] = useState([]);
   const [latestAssessment, setLatestAssessment] = useState(null);
   const [latestTurn, setLatestTurn] = useState(null);
@@ -165,20 +163,17 @@ export default function MvpTestPage() {
 
     async function loadData() {
       try {
-        const [statusResponse, patientsResponse, scenariosResponse] = await Promise.all([
+        const [statusResponse, patientsResponse] = await Promise.all([
           fetch(`${API_BASE_URL}/api/v1/events/fall/status`),
           fetch(`${API_BASE_URL}/api/v1/events/fall/patients`),
-          fetch(`${API_BASE_URL}/api/v1/events/fall/phase4-scenarios`),
         ]);
         const statusPayload = await statusResponse.json();
         const patientsPayload = await patientsResponse.json();
-        const scenariosPayload = await scenariosResponse.json();
         const nextPatients = normalizePatients(patientsPayload.patients);
 
         if (!ignore) {
           setStatus(statusPayload);
           setPatients(nextPatients);
-          setScenarios(scenariosPayload.scenarios || []);
           if (nextPatients.length > 0) {
             setEvent((current) => ({ ...current, user_id: nextPatients[0].user_id }));
           }
@@ -221,21 +216,6 @@ export default function MvpTestPage() {
     setError("");
     setStreamStatus("idle");
     setPhase("idle");
-  }
-
-  function fillScenario(scenarioId) {
-    const scenario = scenarios.find((item) => item.id === scenarioId);
-    if (!scenario) {
-      return;
-    }
-    setSelectedScenarioId(scenario.id);
-    setInteraction({
-      ...DEFAULT_INTERACTION,
-      ...(scenario.interaction_context || {}),
-      new_fact_keys: (scenario.new_fact_keys || []).join(", "),
-    });
-    setDraftMessage(scenario.message_text || "");
-    resetConversation();
   }
 
   async function startSession() {
@@ -333,7 +313,6 @@ export default function MvpTestPage() {
     }
   }
 
-  const selectedScenario = scenarios.find((scenario) => scenario.id === selectedScenarioId);
   const selectedPatient = patients.find((patient) => patient.user_id === event.user_id);
   const interactionSummary = latestTurn?.interaction;
   const debugSnapshot = {
@@ -364,11 +343,6 @@ export default function MvpTestPage() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {scenarios.slice(0, 5).map((scenario) => (
-              <button key={scenario.id} className="btn btn-outline btn-sm" onClick={() => fillScenario(scenario.id)}>
-                {scenario.label}
-              </button>
-            ))}
             <button className="btn btn-outline btn-sm" onClick={resetConversation}>Reset Session</button>
           </div>
         </div>
@@ -376,11 +350,6 @@ export default function MvpTestPage() {
         <p style={{ fontSize: 13, color: "var(--text-sub)" }}>
           API Base: <span style={{ fontFamily: "'DM Mono', monospace" }}>{API_BASE_URL}</span>
         </p>
-        {selectedScenario?.expected_focus && (
-          <p style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 6 }}>
-            Scenario focus: {selectedScenario.expected_focus}
-          </p>
-        )}
       </div>
 
       <div className="grid-3">
@@ -467,7 +436,7 @@ export default function MvpTestPage() {
               padding: 12,
               borderRadius: 20,
               border: "1px solid var(--border)",
-              background: "linear-gradient(180deg, #fffdf8 0%, #f7f1e6 100%)",
+              background: "var(--surface)",
             }}
           >
             {messages.map((message, index) => (
@@ -517,7 +486,7 @@ export default function MvpTestPage() {
           )}
 
           {error && (
-            <div style={{ marginTop: 14, padding: "12px 14px", background: "var(--red-light)", color: "var(--red)", borderRadius: "var(--radius-sm)", fontSize: 13 }}>
+            <div style={{ marginTop: 14, padding: "12px 14px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: "var(--radius-sm)", fontSize: 13 }}>
               {error}
             </div>
           )}
@@ -573,12 +542,12 @@ export default function MvpTestPage() {
                       <div
                         style={{
                           marginBottom: 10,
-                          background: "linear-gradient(135deg, #eef7ea 0%, #dff0d6 100%)",
-                          border: "1px solid #b8d7ad",
+                          background: "var(--green-subtle)",
+                          border: "1px solid var(--green-glow)",
                           borderRadius: "var(--radius-sm)",
                           padding: 12,
                           fontSize: 13,
-                          color: "#345b2c",
+                          color: "var(--green-dim)",
                           lineHeight: 1.5,
                         }}
                       >

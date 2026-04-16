@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import MvpTestPage from "./components/MvpTestPage.jsx";
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
-const PAGES = { ONBOARDING: "onboarding", MONITORING: "monitoring", EMERGENCY: "emergency", MVP_TEST: "mvp_test" };
+const PAGES = { ONBOARDING: "onboarding", PROFILE: "profile", HISTORY: "history", MVP_TEST: "mvp_test" };
 
 // ─── DEMO PROFILES ────────────────────────────────────────────────────────────
 const DEMO_PROFILES = [
@@ -81,38 +81,39 @@ const STYLES = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg: #0d0f0e;
-    --surface: #141716;
-    --surface2: #1c1f1d;
-    --surface3: #232724;
-    --border: #2a2e2b;
-    --border-bright: #374039;
+    --bg: #f8fafb;
+    --surface: #ffffff;
+    --surface2: #f1f5f7;
+    --surface3: #e6ebed;
+    --border: #e2e8eb;
+    --border-bright: #cbd5e1;
 
-    --green: #22c55e;
-    --green-dim: #16a34a;
-    --green-glow: rgba(34,197,94,0.15);
-    --green-subtle: rgba(34,197,94,0.07);
+    --green: #10b981;
+    --green-dim: #059669;
+    --green-glow: rgba(16, 185, 129, 0.1);
+    --green-subtle: rgba(16, 185, 129, 0.05);
 
     --red: #ef4444;
     --red-dim: #dc2626;
-    --red-glow: rgba(239,68,68,0.15);
-    --red-subtle: rgba(239,68,68,0.06);
+    --red-glow: rgba(239, 68, 68, 0.1);
+    --red-subtle: rgba(239, 68, 68, 0.05);
 
     --amber: #f59e0b;
-    --amber-glow: rgba(245,158,11,0.15);
-    --amber-subtle: rgba(245,158,11,0.07);
+    --amber-dim: #d97706;
+    --amber-glow: rgba(245, 158, 11, 0.1);
+    --amber-subtle: rgba(245, 158, 11, 0.05);
 
     --blue: #3b82f6;
-    --blue-subtle: rgba(59,130,246,0.08);
+    --blue-subtle: rgba(59, 130, 246, 0.05);
 
-    --text: #e8ede9;
-    --text-sub: #8a9e8c;
-    --text-muted: #4a5e4c;
+    --text: #1a1c1e;
+    --text-sub: #475569;
+    --text-muted: #94a3b8;
 
-    --radius: 12px;
-    --radius-sm: 8px;
-    --shadow: 0 2px 16px rgba(0,0,0,0.4);
-    --shadow-md: 0 4px 32px rgba(0,0,0,0.5);
+    --radius: 14px;
+    --radius-sm: 10px;
+    --shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+    --shadow-md: 0 12px 24px rgba(15, 23, 42, 0.06);
   }
 
   html, body { height: 100%; }
@@ -139,7 +140,7 @@ const STYLES = `
     display: flex; align-items: center; justify-content: center;
     margin-bottom: 20px; flex-shrink: 0;
   }
-  .sidebar-logo svg { width: 18px; height: 18px; color: #0d0f0e; }
+  .sidebar-logo svg { width: 18px; height: 18px; color: #ffffff; }
   .nav-btn {
     width: 44px; height: 44px;
     border: none; background: transparent;
@@ -148,7 +149,7 @@ const STYLES = `
     font-size: 18px; transition: all 0.15s;
     color: var(--text-muted); position: relative;
   }
-  .nav-btn:hover { background: var(--surface3); color: var(--text-sub); }
+  .nav-btn:hover { background: var(--surface2); color: var(--text); }
   .nav-btn.active { background: var(--green-subtle); color: var(--green); }
   .nav-btn.active::before {
     content: ''; position: absolute; left: -1px; top: 50%; transform: translateY(-50%);
@@ -341,17 +342,17 @@ const STYLES = `
   .panel-high { background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.2); }
   .panel-high .result-header { background: rgba(239,68,68,0.1); }
   .panel-high .result-header h3 { color: var(--red); }
-  .panel-high .reco-box { background: rgba(239,68,68,0.08); color: #fca5a5; }
+  .panel-high .reco-box { background: rgba(239,68,68,0.05); color: var(--red-dim); }
 
   .panel-med { background: var(--amber-subtle); border: 1px solid rgba(245,158,11,0.2); }
   .panel-med .result-header { background: var(--amber-glow); }
   .panel-med .result-header h3 { color: var(--amber); }
-  .panel-med .reco-box { background: var(--amber-subtle); color: #fcd34d; }
+  .panel-med .reco-box { background: var(--amber-subtle); color: var(--amber-dim); }
 
   .panel-low { background: var(--green-subtle); border: 1px solid rgba(34,197,94,0.2); }
   .panel-low .result-header { background: var(--green-glow); }
   .panel-low .result-header h3 { color: var(--green); }
-  .panel-low .reco-box { background: var(--green-subtle); color: #86efac; }
+  .panel-low .reco-box { background: var(--green-subtle); color: var(--green-dim); }
 
   /* ─── EMERGENCY COORDINATOR ─── */
   .ec-section { }
@@ -405,7 +406,7 @@ const STYLES = `
     font-family: 'JetBrains Mono', monospace;
   }
   .tl-dot.done { background: var(--green-glow); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
-  .tl-dot.running { background: var(--green); color: #0d0f0e; animation: tlPulse 1.5s ease infinite; }
+  .tl-dot.running { background: var(--green); color: #ffffff; animation: tlPulse 1.5s ease infinite; }
   @keyframes tlPulse { 0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,0.4);} 50%{box-shadow:0 0 0 8px rgba(34,197,94,0);} }
   .tl-dot.pending { background: var(--surface3); color: var(--text-muted); border: 1px solid var(--border); }
   .tl-content { padding: 2px 0 18px; }
@@ -431,7 +432,7 @@ const STYLES = `
   .dc-card h4 { font-size: 12px; font-weight: 600; }
   .dc-card p { font-size: 10px; color: var(--text-sub); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
   .dc-card.live h4 { color: var(--green); }
-  .dc-card.live p { color: #86efac; }
+  .dc-card.live p { color: var(--green-dim); }
 
   /* Hospital / Map */
   .map-box {
@@ -469,7 +470,7 @@ const STYLES = `
     font-family: 'Instrument Sans', sans-serif;
     display: inline-flex; align-items: center; gap: 7px;
   }
-  .btn-green { background: var(--green); color: #0d0f0e; }
+  .btn-green { background: var(--green); color: #ffffff; }
   .btn-green:hover { background: #16a34a; }
   .btn-red { background: var(--red); color: white; }
   .btn-red:hover { background: var(--red-dim); }
@@ -516,9 +517,9 @@ const STYLES = `
 
   /* ─── MODAL ─── */
   .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.4);
     display: flex; align-items: center; justify-content: center;
-    z-index: 100; backdrop-filter: blur(4px);
+    z-index: 100; backdrop-filter: blur(8px);
     animation: fadeIn 0.2s ease;
   }
   .modal {
