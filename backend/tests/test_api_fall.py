@@ -84,6 +84,8 @@ def test_api_fall_flow() -> None:
     assert "reasoning_trace" in assessment["clinical_assessment"], assessment
     assert "response_plan" in assessment, assessment
     assert "escalation_action" in assessment["response_plan"], assessment
+    assert "communication_handoff" in assessment, assessment
+    assert assessment["communication_handoff"]["mode"] in {"question", "instruction", "status_update", "urgent_instruction", "reassure"}, assessment
     assert assessment["detection"]["fall_detection_confidence_band"] == "high", assessment
     assert assessment["grounding"]["source"] in {"vertex_ai_search", "fallback_file"}, assessment
     assert assessment["audit"]["dispatch_triggered"] == (assessment["action"]["recommended"] == "emergency_dispatch"), assessment

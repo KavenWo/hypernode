@@ -1,4 +1,14 @@
-"""Shared Pydantic schemas for the MVP flow, including assessment output, retrieval grounding, and dispatch-facing structures."""
+"""Shared Pydantic schemas for the fall-flow backend.
+
+This file currently serves several layers at once:
+
+- input contracts coming from the frontend
+- internal agent outputs used during reasoning/communication
+- API/session response payloads sent back to the frontend
+
+The models are grouped below so it is easier to see which ones are runtime
+inputs, internal analysis artifacts, or final product-facing responses.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +35,13 @@ class TriageQuestion(BaseModel):
     text: str = Field(..., description="Question shown to the patient or bystander.")
 
 
+#
+# Frontend/session input models
+#
+# These are the lightweight payloads the UI sends into the backend so the fall
+# services can decide who to talk to, whether reasoning should refresh, and
+# what context is already known for this turn.
+#
 class InteractionInput(BaseModel):
     patient_response_status: str = Field(
         default="unknown",
@@ -78,6 +95,14 @@ class ReasoningRefreshSummary(BaseModel):
     priority: str = Field(..., description="Priority band for the refresh trigger.")
 
 
+#
+# Interaction-layer decision models
+#
+# `InteractionSummary` is the backend's normalized view of who the system is
+# addressing and whether the current turn should trigger a reasoning refresh.
+# This is different from `CommunicationAgentAnalysis`, which is the
+# communication agent's turn-by-turn interpretation artifact.
+#
 class InteractionSummary(BaseModel):
     communication_target: str = Field(..., description="Who the system should address now.")
     responder_mode: str = Field(..., description="Normalized responder mode for the current turn.")
@@ -115,6 +140,12 @@ class ExecutionUpdate(BaseModel):
     detail: str = Field(..., description="Short human-readable explanation of what happened.")
 
 
+#
+# Low-level detection and profile models
+#
+# These models are used by the sentinel/reasoning layers before the final
+# product-facing fall assessment is assembled.
+#
 class VisionAssessment(BaseModel):
     fall_detected: bool = Field(..., description="Whether the vision or motion layer believes a fall occurred.")
     severity_hint: str = Field(..., description="Initial risk hint such as low, medium, or critical.")
@@ -139,6 +170,13 @@ class UserMedicalProfile(BaseModel):
     mobility_support: bool = False
 
 
+#
+# Internal agent output models
+#
+# `ClinicalAssessment` is still the direct output shape used inside the
+# reasoning/coordinator agent layer. The product-facing response uses
+# `ClinicalAssessmentSummary` further below inside `FallAssessment`.
+#
 class ClinicalAssessment(BaseModel):
     severity: str = Field(..., description="Assessed severity: low, medium, or critical.")
     clinical_confidence_score: float = Field(..., description="Confidence that the severity is appropriate.")
@@ -174,6 +212,12 @@ class FallAssessmentRequest(BaseModel):
     interaction: InteractionInput | None = None
 
 
+#
+# Older specialized agent outputs
+#
+# These are still used by a few lower-level agent modules even though they are
+# no longer the main product contracts.
+#
 class DispatchDecision(BaseModel):
     call_emergency_services: bool = Field(..., description="Whether to call an ambulance.")
     notify_family: bool = Field(..., description="Whether to notify emergency contacts.")
@@ -186,6 +230,12 @@ class BystanderInstruction(BaseModel):
     steps: list[str] = Field(..., description="Step-by-step actions for nearby helpers.")
 
 
+#
+# Product-facing assessment models
+#
+# These are the normalized structures the backend returns after combining
+# detection, reasoning, retrieval grounding, and execution planning.
+#
 class DetectionSummary(BaseModel):
     motion_state: str = Field(..., description="Event motion state.")
     fall_detection_confidence_score: float = Field(..., description="Numeric fall detection confidence score.")
@@ -194,7 +244,7 @@ class DetectionSummary(BaseModel):
 
 
 class ReasoningTraceSummary(BaseModel):
-    stage_version: str = Field(default="phase3_reasoning_v1", description="Reasoning policy version used for the staged Phase 3 trace.")
+    stage_version: str = Field(default="clinical_reasoning_policy_v1", description="Reasoning policy version used for the deterministic reasoning trace.")
     top_red_flags: list[str] = Field(default_factory=list, description="Most important red flags that drove the decision.")
     top_protective_signals: list[str] = Field(default_factory=list, description="Protective signals that argued against escalation.")
     vulnerability_modifiers: list[str] = Field(default_factory=list, description="Profile or context modifiers that increased caution.")
@@ -262,6 +312,57 @@ class GuidanceSummary(BaseModel):
     escalation_triggers: list[str] = Field(default_factory=list, description="Grounded escalation cues that explain when urgent help is needed.")
 
 
+class CommunicationHandoffSummary(BaseModel):
+    mode: str = Field(
+        default="question",
+        description="Communication mode such as question, instruction, status_update, urgent_instruction, or reassure.",
+    )
+    priority: str = Field(
+        default="clarify",
+        description="Conversation priority such as execution, safety, reassure, or clarify.",
+    )
+    primary_message: str = Field(
+        default="",
+        description="Short message the communication layer should prefer for the next turn.",
+    )
+    immediate_step: str | None = Field(
+        default=None,
+        description="Optional single step the communication layer should emphasize right now.",
+    )
+    ask_followup: bool = Field(
+        default=False,
+        description="Whether the communication layer should append one short follow-up question now.",
+    )
+    next_question: str | None = Field(
+        default=None,
+        description="Optional follow-up question to ask when clarification is still needed.",
+    )
+    next_focus: str = Field(
+        default="general_check",
+        description="What the next communication turn should focus on.",
+    )
+    quick_replies: list[str] = Field(
+        default_factory=list,
+        description="Suggested short replies for the communication layer.",
+    )
+    rationale: str = Field(
+        default="",
+        description="Short explanation of why this communication mode was chosen.",
+    )
+
+
+class GroundingPassSummary(BaseModel):
+    source: str = Field(default="not_requested", description="Where this grounding pass retrieved support from.")
+    references: list[dict] = Field(default_factory=list, description="Reference metadata from retrieval.")
+    preview: list[str] = Field(default_factory=list, description="Small preview of grounded snippets used.")
+    retrieval_intents: list[str] = Field(default_factory=list, description="Selected retrieval intents used for this grounding pass.")
+    queries: list[str] = Field(default_factory=list, description="Ordered retrieval queries issued or planned for this grounding pass.")
+    buckets: dict[str, list[str]] = Field(default_factory=dict, description="Grouped snippets selected for retrieval debug views when applicable.")
+    queries_by_bucket: dict[str, list[str]] = Field(default_factory=dict, description="Bucket-specific queries used during retrieval.")
+    references_by_bucket: dict[str, list[dict]] = Field(default_factory=dict, description="Bucket-specific references returned by retrieval.")
+    bucket_sources: dict[str, str] = Field(default_factory=dict, description="Source used for each bucket retrieval pass.")
+
+
 class GroundingSummary(BaseModel):
     source: str = Field(default="fallback_file", description="Where grounded medical guidance came from.")
     references: list[dict] = Field(default_factory=list, description="Reference metadata from retrieval.")
@@ -272,6 +373,14 @@ class GroundingSummary(BaseModel):
     queries_by_bucket: dict[str, list[str]] = Field(default_factory=dict, description="Bucket-specific queries used during retrieval.")
     references_by_bucket: dict[str, list[dict]] = Field(default_factory=dict, description="Bucket-specific references returned by retrieval.")
     bucket_sources: dict[str, str] = Field(default_factory=dict, description="Source used for each bucket retrieval pass.")
+    reasoning_support: GroundingPassSummary = Field(
+        default_factory=GroundingPassSummary,
+        description="Grounding support used to refine the clinical reasoning stage.",
+    )
+    guidance_support: GroundingPassSummary = Field(
+        default_factory=GroundingPassSummary,
+        description="Grounding support used to build responder-facing guidance.",
+    )
 
 
 class AuditSummary(BaseModel):
@@ -293,12 +402,12 @@ class FallAssessment(BaseModel):
     action: ActionSummary
     response_plan: ResponsePlanSummary = Field(default_factory=ResponsePlanSummary)
     guidance: GuidanceSummary
+    communication_handoff: CommunicationHandoffSummary = Field(
+        default_factory=CommunicationHandoffSummary,
+        description="Structured handoff telling the communication layer what to say or ask next.",
+    )
     grounding: GroundingSummary = Field(default_factory=GroundingSummary)
     audit: AuditSummary = Field(default_factory=AuditSummary)
-
-
-
-
 class CommunicationTurnRequest(BaseModel):
     session_id: str | None = Field(
         default=None,
@@ -321,6 +430,13 @@ class CommunicationTurnRequest(BaseModel):
     )
 
 
+#
+# Communication/session models
+#
+# `CommunicationAgentAnalysis` describes what the communication layer inferred
+# on the latest turn. The response/state models below wrap that analysis
+# together with session-level reasoning status and the latest assessment.
+#
 class CommunicationAgentAnalysis(BaseModel):
     followup_text: str = Field(..., description="Short human-facing next message from the communication AI.")
     responder_role: str = Field(..., description="Best guess for who is speaking: patient, bystander, unknown, or no_response.")

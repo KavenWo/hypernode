@@ -12,7 +12,7 @@ def build_clinical_reasoning_prompt(
     patient_profile: UserMedicalProfile,
     vision_assessment: VisionAssessment,
     vital_assessment: VitalAssessment | None,
-    grounded_medical_guidance: list[str],
+    grounded_medical_guidance: list[str] | None,
     phase3_context: str,
     patient_answers: list[PatientAnswer] | None = None,
 ) -> str:
@@ -21,7 +21,7 @@ def build_clinical_reasoning_prompt(
         if vital_assessment
         else "No vital-sign assessment is available yet."
     )
-    guidance_context = "\n".join(f"- {item}" for item in grounded_medical_guidance) or "- No external medical guidance retrieved."
+    guidance_context = "\n".join(f"- {item}" for item in (grounded_medical_guidance or [])) or "- No external medical guidance retrieved."
     answer_context = (
         "\n".join(f"- {answer.question_id}: {answer.answer}" for answer in (patient_answers or []))
         or "- No patient answers were collected."

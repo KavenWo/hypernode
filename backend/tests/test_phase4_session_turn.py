@@ -9,6 +9,7 @@ from agents.shared.schemas import (  # noqa: E402
     AuditSummary,
     ClinicalAssessmentSummary,
     CommunicationAgentAnalysis,
+    CommunicationHandoffSummary,
     CommunicationTurnRequest,
     DetectionSummary,
     FallAssessment,
@@ -70,6 +71,16 @@ def _previous_assessment() -> FallAssessment:
         guidance=GuidanceSummary(
             primary_message="Keep the patient still and keep watching breathing.",
             steps=["Keep the patient still.", "Watch for normal breathing."],
+        ),
+        communication_handoff=CommunicationHandoffSummary(
+            mode="instruction",
+            priority="safety",
+            primary_message="Keep the patient still and keep watching breathing.",
+            immediate_step="Keep the patient still.",
+            ask_followup=False,
+            next_focus="guided_action",
+            quick_replies=["Done", "Need next step", "Condition worse"],
+            rationale="Existing guidance remains active and should be executed.",
         ),
         grounding=GroundingSummary(),
         audit=AuditSummary(),
@@ -150,6 +161,7 @@ async def test_phase4_session_turn_loop() -> None:
     assert continue_response.reasoning_invoked is False, continue_response
     assert continue_response.guidance_steps, continue_response
     assert len(continue_response.guidance_steps) == 1, continue_response
+    assert continue_response.communication_analysis.guidance_intent in {"instruction", "reassure"}, continue_response
 
     refresh_request = CommunicationTurnRequest(
         session_id=start_response.session_id,

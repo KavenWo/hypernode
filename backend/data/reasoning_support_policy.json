@@ -1,0 +1,101 @@
+{
+  "description": "Machine-readable reasoning support grounding policy used to fetch medical knowledge for severity and escalation judgments.",
+  "policy_version": "reasoning_support_v1",
+  "default_intent_limit": 2,
+  "fallback_intents": [
+    "response_general_reasoning",
+    "red_flags_reasoning"
+  ],
+  "intents": {
+    "assessment_unconscious_reasoning": {
+      "priority": 1,
+      "queries": [
+        "unconscious after fall assessment airway responsiveness severity",
+        "assessment unconscious fall emergency escalation"
+      ]
+    },
+    "assessment_conscious_reasoning": {
+      "priority": 2,
+      "queries": [
+        "conscious after fall assessment pain breathing mobility severity",
+        "assessment conscious fall red flags severity"
+      ]
+    },
+    "scene_mechanism_reasoning": {
+      "priority": 2,
+      "queries": [
+        "fall mechanism scene assessment severity risk factors",
+        "assessment scene and mechanism after fall severity"
+      ]
+    },
+    "mobility_do_not_move_reasoning": {
+      "priority": 2,
+      "queries": [
+        "cannot stand after fall do not move spinal fracture severity",
+        "mobility and do not move after fall assessment"
+      ]
+    },
+    "pain_injury_reasoning": {
+      "priority": 3,
+      "queries": [
+        "pain and injury check after fall severity assessment",
+        "fall pain injury assessment red flags fracture severity"
+      ]
+    },
+    "red_flags_reasoning": {
+      "priority": 1,
+      "queries": [
+        "fall red flags severity escalation abnormal breathing head injury",
+        "red flags after fall emergency escalation logic"
+      ]
+    },
+    "special_risk_factors_reasoning": {
+      "priority": 1,
+      "queries": [
+        "special risk factors after fall blood thinners older adult severity",
+        "fall blood thinners high risk escalation logic"
+      ]
+    },
+    "severity_high_reasoning": {
+      "priority": 1,
+      "queries": [
+        "high severity fall criteria escalation emergency dispatch",
+        "severity high fall emergency escalation logic"
+      ]
+    },
+    "severity_moderate_reasoning": {
+      "priority": 2,
+      "queries": [
+        "moderate severity fall criteria contact family reassessment",
+        "severity moderate fall escalation logic"
+      ]
+    },
+    "severity_low_reasoning": {
+      "priority": 3,
+      "queries": [
+        "low severity fall monitoring criteria home observation",
+        "severity low fall monitoring delayed red flags"
+      ]
+    },
+    "delayed_red_flags_reasoning": {
+      "priority": 3,
+      "queries": [
+        "delayed red flags monitoring after fall head injury worsening signs",
+        "monitoring delayed red flags after fall"
+      ]
+    },
+    "escalation_logic_reasoning": {
+      "priority": 1,
+      "queries": [
+        "fall escalation logic emergency dispatch pending confirmation",
+        "escalation logic after fall abnormal breathing head injury blood thinners"
+      ]
+    },
+    "response_general_reasoning": {
+      "priority": 4,
+      "queries": [
+        "general response after fall severity assessment and next action"
+      ]
+    }
+  }
+}

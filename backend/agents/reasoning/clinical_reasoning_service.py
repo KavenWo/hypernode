@@ -1,4 +1,4 @@
-"""Clinical agent: combines event data, patient profile, and grounded guidance to assess medical severity."""
+"""Clinical reasoning service: orchestrates live-model reasoning around the deterministic policy."""
 
 import asyncio
 import logging
@@ -15,7 +15,11 @@ from agents.shared.schemas import (
     VitalAssessment,
 )
 
-from .phase3_reasoning import apply_phase3_defaults, render_phase3_context, run_phase3_reasoning
+from .clinical_reasoning_policy import (
+    apply_reasoning_defaults,
+    render_clinical_reasoning_context,
+    run_clinical_reasoning_policy,
+)
 from .prompts import build_clinical_reasoning_prompt
 
 logger = logging.getLogger(__name__)
@@ -28,10 +32,10 @@ async def assess_clinical_severity(
     patient_profile: UserMedicalProfile,
     vision_assessment: VisionAssessment,
     vital_assessment: VitalAssessment | None,
-    grounded_medical_guidance: list[str],
+    grounded_medical_guidance: list[str] | None = None,
     patient_answers: list[PatientAnswer] | None = None,
 ) -> ClinicalAssessment:
-    stage_outcome = run_phase3_reasoning(
+    reasoning_outcome = run_clinical_reasoning_policy(
         event=event,
         patient_profile=patient_profile,
         vision_assessment=vision_assessment,
@@ -44,7 +48,7 @@ async def assess_clinical_severity(
         vision_assessment,
         vital_assessment,
         grounded_medical_guidance,
-        render_phase3_context(stage_outcome),
+        render_clinical_reasoning_context(reasoning_outcome),
         patient_answers,
     )
 
@@ -54,14 +58,14 @@ async def assess_clinical_severity(
             event.user_id,
         )
         return _fallback_clinical_assessment(
-            stage_outcome=stage_outcome,
+            reasoning_outcome=reasoning_outcome,
         )
 
     try:
         logger.info(
             "Starting live clinical reasoning for user %s with %d grounded guidance snippet(s).",
             event.user_id,
-            len(grounded_medical_guidance),
+            len(grounded_medical_guidance or []),
         )
         response = await _generate_json_response(
             client=client,
@@ -77,7 +81,7 @@ async def assess_clinical_severity(
             assessment.severity,
             assessment.recommended_action,
         )
-        return apply_phase3_defaults(assessment=assessment, outcome=stage_outcome)
+        return apply_reasoning_defaults(assessment=assessment, outcome=reasoning_outcome)
     except Exception as exc:
         logger.warning(
             "Live clinical reasoning failed for user %s. Falling back to heuristic assessment. Error: %s",
@@ -85,7 +89,7 @@ async def assess_clinical_severity(
             exc,
         )
         return _fallback_clinical_assessment(
-            stage_outcome=stage_outcome,
+            reasoning_outcome=reasoning_outcome,
         )
 
 
@@ -133,13 +137,13 @@ async def _generate_json_response(*, client, prompt: str, schema):
 
 def _fallback_clinical_assessment(
     *,
-    stage_outcome,
+    reasoning_outcome,
 ) -> ClinicalAssessment:
-    assessment = stage_outcome.to_clinical_assessment().model_copy(
+    assessment = reasoning_outcome.to_clinical_assessment().model_copy(
         update={
             "reasoning_summary": (
                 "Fallback assessment used because the live reasoning model was unavailable. "
-                f"{stage_outcome.reasoning_summary}"
+                f"{reasoning_outcome.reasoning_summary}"
             )
         }
     )
@@ -147,6 +151,6 @@ def _fallback_clinical_assessment(
         "Fallback clinical assessment generated. Severity=%s Action=%s Reasons=%s",
         assessment.severity,
         assessment.recommended_action,
-        stage_outcome.severity_reason,
+        reasoning_outcome.severity_reason,
     )
     return assessment

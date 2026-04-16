@@ -20,7 +20,8 @@ from agents.communication.interaction_policy import (
     choose_interaction_target,
     should_refresh_reasoning,
 )
-from agents.reasoning.clinical_agent import assess_clinical_severity
+from agents.reasoning.clinical_reasoning_service import assess_clinical_severity
+from agents.reasoning.support_grounding import run_reasoning_support_grounding
 from agents.sentinel.vital_agent import inspect_vitals
 from agents.sentinel.vision_agent import inspect_fall_event
 from agents.shared.config import get_genai_client
@@ -28,10 +29,13 @@ from agents.triage.question_agent import generate_triage_questions
 from app.fall.contracts import (
     ActionSummary,
     AuditSummary,
+    ClinicalAssessment,
     ClinicalAssessmentSummary,
+    CommunicationHandoffSummary,
     DetectionSummary,
     FallAssessment,
     FallEvent,
+    GroundingPassSummary,
     GroundingSummary,
     GuidanceSummary,
     InteractionInput,
@@ -40,6 +44,8 @@ from app.fall.contracts import (
     ReasoningRefreshSummary,
     TriageQuestionSet,
     UserMedicalProfile,
+    VisionAssessment,
+    VitalAssessment,
     VitalSigns,
 )
 from app.fall.execution_service import SeverityLevel as EmergencySeverityLevel
@@ -292,6 +298,333 @@ def _build_dispatch_ai_summary(
     }
 
 
+async def _run_clinical_state_stage(
+    *,
+    client,
+    event: FallEvent,
+    vitals: VitalSigns | None,
+    patient_profile: UserMedicalProfile,
+    patient_answers: list[PatientAnswer],
+) -> tuple[VisionAssessment, VitalAssessment | None, ClinicalAssessment]:
+    vision_assessment = await inspect_fall_event(event)
+    vital_assessment = await inspect_vitals(vitals)
+    clinical_assessment = await assess_clinical_severity(
+        client=client,
+        event=event,
+        patient_profile=patient_profile,
+        vision_assessment=vision_assessment,
+        vital_assessment=vital_assessment,
+        grounded_medical_guidance=None,
+        patient_answers=patient_answers,
+    )
+    return vision_assessment, vital_assessment, clinical_assessment
+
+
+def _run_grounded_guidance_stage(
+    *,
+    patient_profile: UserMedicalProfile,
+    patient_answers: list[PatientAnswer],
+    clinical_severity: str,
+    action: str,
+) -> tuple[dict, dict, GuidanceSummary]:
+    retrieval_plan = build_phase2_retrieval_plan(
+        patient_profile=patient_profile,
+        patient_answers=patient_answers,
+        severity_hint=clinical_severity,
+    )
+    retrieval_result = run_phase2_retrieval(
+        patient_profile=patient_profile,
+        patient_answers=patient_answers,
+        severity_hint=clinical_severity,
+    )
+    normalized_guidance = normalize_guidance_from_buckets(
+        buckets=retrieval_result["bucketed_snippets"],
+        action=action,
+    )
+    return retrieval_plan, retrieval_result, normalized_guidance
+
+
+def _build_clinical_assessment_summary(clinical_assessment) -> ClinicalAssessmentSummary:
+    return ClinicalAssessmentSummary(
+        severity=clinical_assessment.severity,
+        clinical_confidence_score=clinical_assessment.clinical_confidence_score,
+        clinical_confidence_band=clinical_assessment.clinical_confidence_band,
+        action_confidence_score=clinical_assessment.action_confidence_score,
+        action_confidence_band=clinical_assessment.action_confidence_band,
+        red_flags=clinical_assessment.red_flags,
+        protective_signals=clinical_assessment.protective_signals,
+        suspected_risks=clinical_assessment.suspected_risks,
+        vulnerability_modifiers=clinical_assessment.vulnerability_modifiers,
+        missing_facts=clinical_assessment.missing_facts,
+        contradictions=clinical_assessment.contradictions,
+        uncertainty=clinical_assessment.uncertainty,
+        hard_emergency_triggered=clinical_assessment.hard_emergency_triggered,
+        blocking_uncertainties=clinical_assessment.blocking_uncertainties,
+        override_policy=clinical_assessment.override_policy,
+        reasoning_summary=clinical_assessment.reasoning_summary,
+        response_plan=clinical_assessment.response_plan,
+        reasoning_trace=clinical_assessment.reasoning_trace,
+    )
+
+
+def _should_trigger_reasoning_support(
+    *,
+    action: str,
+    clinical_assessment: ClinicalAssessmentSummary,
+) -> bool:
+    high_risk_flags = {
+        "abnormal_breathing",
+        "not_breathing",
+        "severe_bleeding",
+        "head_strike",
+        "blood_thinner_use",
+        "suspected_spinal_injury",
+        "suspected_fracture",
+        "cannot_stand",
+        "chest_pain",
+        "unresponsive",
+        "loss_of_consciousness",
+    }
+    if action in {"dispatch_pending_confirmation", "emergency_dispatch"}:
+        return True
+    if clinical_assessment.contradictions or clinical_assessment.blocking_uncertainties:
+        return True
+    if any(flag in high_risk_flags for flag in clinical_assessment.red_flags):
+        return True
+    if clinical_assessment.vulnerability_modifiers:
+        return True
+    return False
+
+
+def _action_item_to_instruction(action_type: str) -> str | None:
+    mapping = {
+        "start_cpr_guidance": "Start CPR if the patient is not breathing normally.",
+        "retrieve_aed_if_available": "Get an AED if one is available nearby.",
+        "check_breathing": "Check whether the patient is breathing normally.",
+        "apply_pressure_to_bleeding": "Apply firm pressure to any severe bleeding.",
+        "keep_patient_still": "Keep the patient still.",
+        "do_not_move_patient": "Do not move the patient unless there is immediate danger.",
+        "check_consciousness": "Check whether the patient is awake and responding.",
+        "wait_for_responders": "Stay with the patient while responders are on the way.",
+        "stay_on_scene": "Stay on scene if it is safe to do so.",
+        "monitor_for_worsening_signs": "Watch for worsening pain, breathing, or responsiveness.",
+        "continue_reassessment": "Keep reassessing the patient and tell me what changes.",
+        "inform_family": "I can inform the family for support.",
+    }
+    return mapping.get(action_type)
+
+
+def _should_trigger_grounded_guidance(
+    *,
+    action: str,
+    clinical_assessment: ClinicalAssessmentSummary,
+    interaction_summary: InteractionSummary,
+) -> bool:
+    if action in {"dispatch_pending_confirmation", "emergency_dispatch"}:
+        return True
+    if clinical_assessment.response_plan.bystander_actions:
+        return True
+    if interaction_summary.communication_target == "bystander" and clinical_assessment.response_plan.followup_actions:
+        return True
+    return False
+
+
+def _build_non_grounded_guidance(
+    *,
+    action: str,
+    clinical_assessment: ClinicalAssessmentSummary,
+) -> GuidanceSummary:
+    prioritized_actions = [
+        *clinical_assessment.response_plan.bystander_actions,
+        *clinical_assessment.response_plan.followup_actions,
+        *clinical_assessment.response_plan.notification_actions,
+    ]
+    steps = [
+        instruction
+        for instruction in (_action_item_to_instruction(item.type) for item in prioritized_actions)
+        if instruction
+    ][:4]
+
+    if not steps:
+        if action == "contact_family":
+            steps = ["Stay in a safe position while support is arranged."]
+        elif action == "monitor":
+            steps = ["Stay in a safe position and monitor for changes."]
+        else:
+            steps = ["Stay still and wait for the next instruction."]
+
+    primary_message = steps[0]
+    warnings: list[str] = []
+    if any(flag in clinical_assessment.red_flags for flag in ["head_strike", "suspected_spinal_injury"]):
+        warnings.append("Do not move too quickly if head, neck, or back injury is possible.")
+
+    escalation_triggers = [
+        trigger
+        for trigger in [
+            "Breathing that becomes abnormal requires urgent escalation."
+            if any(flag in clinical_assessment.red_flags for flag in ["abnormal_breathing", "not_breathing"])
+            else None,
+            "Heavy bleeding requires immediate help."
+            if "severe_bleeding" in clinical_assessment.red_flags
+            else None,
+        ]
+        if trigger
+    ][:3]
+
+    return GuidanceSummary(
+        primary_message=primary_message,
+        steps=steps,
+        warnings=warnings,
+        escalation_triggers=escalation_triggers,
+    )
+
+
+def _targeted_followup_for_missing_fact(
+    missing_fact: str | None,
+    *,
+    communication_target: str,
+) -> tuple[str | None, str, list[str]]:
+    if missing_fact == "breathing_status_unconfirmed":
+        return (
+            "Is the patient breathing normally right now?",
+            "breathing",
+            ["Breathing normally", "Breathing strangely", "Not breathing"],
+        )
+    if missing_fact == "bleeding_status_unconfirmed":
+        return (
+            "Is there any heavy bleeding right now?",
+            "bleeding",
+            ["Heavy bleeding", "A little bleeding", "No bleeding"],
+        )
+    if missing_fact == "responsiveness_unconfirmed":
+        return (
+            "Is the patient awake and responding right now?",
+            "responsiveness",
+            ["Awake", "Slow to respond", "Not responding"],
+        )
+    if missing_fact == "head_strike_unconfirmed":
+        return (
+            "Did the patient hit their head in the fall?",
+            "head_injury",
+            ["Yes", "No", "Not sure"],
+        )
+    if communication_target == "bystander":
+        return (None, "observation", [])
+    return (None, "general_check", [])
+
+
+def _build_communication_handoff(
+    *,
+    action: str,
+    interaction_summary: InteractionSummary,
+    clinical_assessment: ClinicalAssessmentSummary,
+    response_plan: ResponsePlanSummary,
+    guidance: GuidanceSummary,
+) -> CommunicationHandoffSummary:
+    target = interaction_summary.communication_target
+    immediate_step = guidance.steps[0] if guidance.steps else None
+    priority_missing_fact = clinical_assessment.reasoning_trace.priority_missing_fact
+    question, next_focus, quick_replies = _targeted_followup_for_missing_fact(
+        priority_missing_fact,
+        communication_target=target,
+    )
+    has_bystander_actions = bool(response_plan.bystander_actions)
+    has_notification_actions = bool(response_plan.notification_actions)
+
+    if action == "emergency_dispatch":
+        primary_message = (
+            "Emergency help is on the way. Stay with the patient and keep them still."
+            if target == "bystander"
+            else "Emergency help is on the way. Stay still and focus on slow breaths."
+        )
+        return CommunicationHandoffSummary(
+            mode="status_update",
+            priority="execution",
+            primary_message=primary_message,
+            immediate_step=immediate_step,
+            ask_followup=False,
+            next_focus="scene_safety",
+            quick_replies=["Okay", "Breathing changed", "Condition worse"],
+            rationale="Emergency dispatch is active, so communication should prioritize status and immediate safety guidance.",
+        )
+
+    if action == "dispatch_pending_confirmation":
+        primary_message = (
+            "Emergency help may be needed. Keep the patient still while I confirm the most urgent detail."
+            if target == "bystander"
+            else "Emergency help may be needed. Stay still while I confirm the most urgent detail."
+        )
+        return CommunicationHandoffSummary(
+            mode="urgent_instruction",
+            priority="execution",
+            primary_message=primary_message,
+            immediate_step=immediate_step,
+            ask_followup=bool(question),
+            next_question=question,
+            next_focus=next_focus,
+            quick_replies=quick_replies,
+            rationale="Urgent escalation is pending confirmation, so communication should give a safety step and ask only the top missing fact.",
+        )
+
+    if has_bystander_actions:
+        primary_message = guidance.primary_message or (
+            "Stay with the patient and follow the next safety step."
+            if target == "bystander"
+            else "Follow the next safety step and stay still."
+        )
+        return CommunicationHandoffSummary(
+            mode="instruction",
+            priority="safety",
+            primary_message=primary_message,
+            immediate_step=immediate_step,
+            ask_followup=False,
+            next_focus="guided_action",
+            quick_replies=["Done", "Need next step", "Condition worse"],
+            rationale="Immediate bystander or patient actions are available, so communication should prioritize execution over more triage questions.",
+        )
+
+    if has_notification_actions and action == "contact_family":
+        primary_message = (
+            "I can update family for support. Stay in a safe position and move slowly."
+            if target == "patient"
+            else "I can update the family for support. Stay with the patient and keep watching them."
+        )
+        return CommunicationHandoffSummary(
+            mode="status_update",
+            priority="reassure",
+            primary_message=primary_message,
+            immediate_step=immediate_step,
+            ask_followup=False,
+            next_focus="support",
+            quick_replies=["Okay", "Pain worse", "Breathing worse"],
+            rationale="Support notifications are the main active track, so communication should reassure and keep the scene stable.",
+        )
+
+    if question and clinical_assessment.blocking_uncertainties:
+        return CommunicationHandoffSummary(
+            mode="question",
+            priority="clarify",
+            primary_message=guidance.primary_message,
+            immediate_step=immediate_step,
+            ask_followup=True,
+            next_question=question,
+            next_focus=next_focus,
+            quick_replies=quick_replies,
+            rationale="A blocking uncertainty remains, so communication should ask one targeted question while keeping current guidance active.",
+        )
+
+    return CommunicationHandoffSummary(
+        mode="instruction" if immediate_step or guidance.primary_message else "reassure",
+        priority="safety" if immediate_step else "reassure",
+        primary_message=guidance.primary_message,
+        immediate_step=immediate_step,
+        ask_followup=False,
+        next_focus="monitoring",
+        quick_replies=["Okay", "Pain worse", "Breathing worse"],
+        rationale="Current guidance is sufficient for this turn, so communication should reinforce the plan rather than reopen broad triage questions.",
+    )
+
+
 def _vitals_to_dispatch_payload(vitals: VitalSigns | None) -> dict:
     if vitals is None:
         return {}
@@ -327,8 +660,6 @@ async def run_fall_assessment(
         client = None
 
     patient_profile = load_user_profile(event.user_id)
-    vision_assessment = await inspect_fall_event(event)
-    vital_assessment = await inspect_vitals(vitals)
     answers = patient_answers or []
     initial_interaction = build_interaction_summary(
         interaction=interaction,
@@ -336,42 +667,111 @@ async def run_fall_assessment(
         recommended_action=None,
     )
 
-    retrieval_plan = build_phase2_retrieval_plan(
-        patient_profile=patient_profile,
-        patient_answers=answers,
-        severity_hint=vision_assessment.severity_hint,
-    )
-    retrieval_result = run_phase2_retrieval(
-        patient_profile=patient_profile,
-        patient_answers=answers,
-        severity_hint=vision_assessment.severity_hint,
-    )
-    grounded_medical_guidance = retrieval_result["guidance_snippets"]
-    logger.info(
-        "[Reasoning] Retrieval ready | user=%s source=%s intents=%s",
-        event.user_id,
-        retrieval_result["retrieval_source"],
-        ", ".join(retrieval_plan["selected_intents"][:3]) or "none",
-    )
-
-    clinical_assessment = await assess_clinical_severity(
+    vision_assessment, vital_assessment, clinical_assessment = await _run_clinical_state_stage(
         client=client,
         event=event,
+        vitals=vitals,
         patient_profile=patient_profile,
-        vision_assessment=vision_assessment,
-        vital_assessment=vital_assessment,
-        grounded_medical_guidance=grounded_medical_guidance,
         patient_answers=answers,
     )
+    clinical_assessment_summary = _build_clinical_assessment_summary(clinical_assessment)
     next_action = clinical_assessment.recommended_action
-    normalized_guidance = normalize_guidance_from_buckets(
-        buckets=retrieval_result["bucketed_snippets"],
+    reasoning_support_summary = GroundingPassSummary(source="not_requested")
+
+    if _should_trigger_reasoning_support(
         action=next_action,
-    )
+        clinical_assessment=clinical_assessment_summary,
+    ):
+        reasoning_support_result = run_reasoning_support_grounding(
+            patient_profile=patient_profile,
+            patient_answers=answers,
+            clinical_assessment=clinical_assessment_summary,
+        )
+        logger.info(
+            "[Reasoning] Support grounding ready | user=%s source=%s intents=%s",
+            event.user_id,
+            reasoning_support_result["source"],
+            ", ".join(reasoning_support_result["selected_intents"][:3]) or "none",
+        )
+        clinical_assessment = await assess_clinical_severity(
+            client=client,
+            event=event,
+            patient_profile=patient_profile,
+            vision_assessment=vision_assessment,
+            vital_assessment=vital_assessment,
+            grounded_medical_guidance=reasoning_support_result["snippets"],
+            patient_answers=answers,
+        )
+        clinical_assessment_summary = _build_clinical_assessment_summary(clinical_assessment)
+        next_action = clinical_assessment.recommended_action
+        reasoning_support_summary = GroundingPassSummary(
+            source=reasoning_support_result["source"],
+            references=reasoning_support_result["references"],
+            preview=reasoning_support_result["snippets"][:3],
+            retrieval_intents=reasoning_support_result["selected_intents"],
+            queries=reasoning_support_result["queries"],
+        )
+
     interaction_summary = build_interaction_summary(
         interaction=interaction,
         patient_answers=answers,
         recommended_action=next_action,
+    )
+    should_ground_guidance = _should_trigger_grounded_guidance(
+        action=next_action,
+        clinical_assessment=clinical_assessment_summary,
+        interaction_summary=interaction_summary,
+    )
+
+    if should_ground_guidance:
+        retrieval_plan, retrieval_result, normalized_guidance = _run_grounded_guidance_stage(
+            patient_profile=patient_profile,
+            patient_answers=answers,
+            clinical_severity=clinical_assessment.severity,
+            action=next_action,
+        )
+        grounded_medical_guidance = retrieval_result["guidance_snippets"]
+        logger.info(
+            "[Guidance] Retrieval ready | user=%s source=%s intents=%s",
+            event.user_id,
+            retrieval_result["retrieval_source"],
+            ", ".join(retrieval_plan["selected_intents"][:3]) or "none",
+        )
+        guidance_support_summary = GroundingPassSummary(
+            source=retrieval_result["retrieval_source"],
+            references=retrieval_result.get("references", []),
+            preview=grounded_medical_guidance[:3],
+            retrieval_intents=retrieval_plan["selected_intents"],
+            queries=retrieval_plan["queries"],
+            buckets=retrieval_result["bucketed_snippets"],
+            queries_by_bucket=retrieval_result.get("queries_by_bucket", {}),
+            references_by_bucket=retrieval_result.get("references_by_bucket", {}),
+            bucket_sources=retrieval_result.get("bucket_sources", {}),
+        )
+        guidance_policy_version = retrieval_plan["policy_version"]
+        overall_grounding_source = retrieval_result["retrieval_source"]
+    else:
+        normalized_guidance = _build_non_grounded_guidance(
+            action=next_action,
+            clinical_assessment=clinical_assessment_summary,
+        )
+        logger.info(
+            "[Guidance] Retrieval skipped | user=%s action=%s severity=%s target=%s",
+            event.user_id,
+            next_action,
+            clinical_assessment.severity,
+            interaction_summary.communication_target,
+        )
+        guidance_support_summary = GroundingPassSummary(source="not_requested")
+        guidance_policy_version = "guidance_skipped"
+        overall_grounding_source = reasoning_support_summary.source
+
+    communication_handoff = _build_communication_handoff(
+        action=next_action,
+        interaction_summary=interaction_summary,
+        clinical_assessment=clinical_assessment_summary,
+        response_plan=clinical_assessment.response_plan,
+        guidance=normalized_guidance,
     )
 
     assessment = FallAssessment(
@@ -385,26 +785,7 @@ async def run_fall_assessment(
             fall_detection_confidence_band=_confidence_band(event.confidence_score),
             event_validity=_event_validity(event, vision_assessment),
         ),
-        clinical_assessment=ClinicalAssessmentSummary(
-            severity=clinical_assessment.severity,
-            clinical_confidence_score=clinical_assessment.clinical_confidence_score,
-            clinical_confidence_band=clinical_assessment.clinical_confidence_band,
-            action_confidence_score=clinical_assessment.action_confidence_score,
-            action_confidence_band=clinical_assessment.action_confidence_band,
-            red_flags=clinical_assessment.red_flags,
-            protective_signals=clinical_assessment.protective_signals,
-            suspected_risks=clinical_assessment.suspected_risks,
-            vulnerability_modifiers=clinical_assessment.vulnerability_modifiers,
-            missing_facts=clinical_assessment.missing_facts,
-            contradictions=clinical_assessment.contradictions,
-            uncertainty=clinical_assessment.uncertainty,
-            hard_emergency_triggered=clinical_assessment.hard_emergency_triggered,
-            blocking_uncertainties=clinical_assessment.blocking_uncertainties,
-            override_policy=clinical_assessment.override_policy,
-            reasoning_summary=clinical_assessment.reasoning_summary,
-            response_plan=clinical_assessment.response_plan,
-            reasoning_trace=clinical_assessment.reasoning_trace,
-        ),
+        clinical_assessment=clinical_assessment_summary,
         action=ActionSummary(
             recommended=next_action,
             requires_confirmation=(next_action == "dispatch_pending_confirmation"),
@@ -418,20 +799,23 @@ async def run_fall_assessment(
             warnings=normalized_guidance.warnings,
             escalation_triggers=normalized_guidance.escalation_triggers,
         ),
+        communication_handoff=communication_handoff,
         grounding=GroundingSummary(
-            source=retrieval_result["retrieval_source"],
-            references=retrieval_result.get("references", []),
-            preview=grounded_medical_guidance[:3],
-            retrieval_intents=retrieval_plan["selected_intents"],
-            queries=retrieval_plan["queries"],
-            buckets=retrieval_result["bucketed_snippets"],
-            queries_by_bucket=retrieval_result.get("queries_by_bucket", {}),
-            references_by_bucket=retrieval_result.get("references_by_bucket", {}),
-            bucket_sources=retrieval_result.get("bucket_sources", {}),
+            source=overall_grounding_source,
+            references=guidance_support_summary.references,
+            preview=guidance_support_summary.preview,
+            retrieval_intents=guidance_support_summary.retrieval_intents,
+            queries=guidance_support_summary.queries,
+            buckets=guidance_support_summary.buckets,
+            queries_by_bucket=guidance_support_summary.queries_by_bucket,
+            references_by_bucket=guidance_support_summary.references_by_bucket,
+            bucket_sources=guidance_support_summary.bucket_sources,
+            reasoning_support=reasoning_support_summary,
+            guidance_support=guidance_support_summary,
         ),
         audit=AuditSummary(
             fallback_used=clinical_assessment.reasoning_summary.startswith(FALLBACK_REASONING_PREFIX),
-            policy_version=f"{retrieval_plan['policy_version']}+phase3_reasoning_v1",
+            policy_version=f"{guidance_policy_version}+clinical_reasoning_policy_v1",
             dispatch_triggered=False,
         ),
     )

@@ -1,4 +1,4 @@
-"""Phase 3 staged reasoning helpers for extracting signals, handling uncertainty, and producing a compact debug trace."""
+"""Deterministic clinical reasoning policy for signal extraction and fallback assessment."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ from agents.shared.schemas import (
     VisionAssessment,
 )
 
-PHASE3_POLICY_PATH = Path(__file__).resolve().parents[2] / "data" / "phase3_reasoning_policy.json"
+CLINICAL_REASONING_POLICY_PATH = Path(__file__).resolve().parents[2] / "data" / "clinical_reasoning_policy.json"
 
 
 @dataclass
-class Phase3SignalBundle:
+class ReasoningSignalBundle:
     red_flags: list[str] = field(default_factory=list)
     protective_signals: list[str] = field(default_factory=list)
     suspected_risks: list[str] = field(default_factory=list)
@@ -38,8 +38,8 @@ class Phase3SignalBundle:
 
 
 @dataclass
-class Phase3ReasoningOutcome:
-    signals: Phase3SignalBundle
+class ClinicalReasoningOutcome:
+    signals: ReasoningSignalBundle
     severity: str
     recommended_action: str
     clinical_confidence_score: float
@@ -51,7 +51,7 @@ class Phase3ReasoningOutcome:
     response_plan: ResponsePlanSummary
 
     def to_clinical_assessment(self) -> ClinicalAssessment:
-        """Convert the staged outcome into the shared MVP clinical schema."""
+        """Convert the deterministic outcome into the shared clinical schema."""
         return ClinicalAssessment(
             severity=self.severity,
             clinical_confidence_score=self.clinical_confidence_score,
@@ -83,9 +83,9 @@ def _confidence_band(score: float) -> str:
     return "low"
 
 
-def load_phase3_reasoning_policy() -> dict:
-    """Load the merge-safe policy asset that describes the Phase 3 reasoning pipeline."""
-    with PHASE3_POLICY_PATH.open("r", encoding="utf-8") as handle:
+def load_clinical_reasoning_policy() -> dict:
+    """Load the deterministic clinical reasoning policy asset."""
+    with CLINICAL_REASONING_POLICY_PATH.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -102,16 +102,16 @@ def _has_any(text: str, phrases: list[str]) -> bool:
     return any(phrase in text for phrase in phrases)
 
 
-def extract_phase3_signals(
+def extract_reasoning_signals(
     *,
     event: FallEvent,
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
     vital_assessment: VitalAssessment | None,
-) -> Phase3SignalBundle:
-    """Normalize raw answers and profile context into structured Phase 3 signals."""
+) -> ReasoningSignalBundle:
+    """Normalize raw answers and profile context into structured reasoning signals."""
     answer_text = _combined_answers(patient_answers)
-    signals = Phase3SignalBundle()
+    signals = ReasoningSignalBundle()
 
     checks = [
         (["unresponsive", "not responding", "barely responding"], "unresponsive", "airway_compromise"),
@@ -206,7 +206,7 @@ def extract_phase3_signals(
     if signals.contradictions:
         _add_unique(signals.uncertainty, "Conflicting reports lower certainty and should be reviewed carefully")
 
-    for fact_name in load_phase3_reasoning_policy()["missing_fact_priority"]:
+    for fact_name in load_clinical_reasoning_policy()["missing_fact_priority"]:
         if fact_name in signals.missing_facts:
             signals.priority_missing_fact = fact_name
             break
@@ -214,16 +214,16 @@ def extract_phase3_signals(
     return signals
 
 
-def run_phase3_reasoning(
+def run_clinical_reasoning_policy(
     *,
     event: FallEvent,
     patient_profile: UserMedicalProfile,
     vision_assessment: VisionAssessment,
     vital_assessment: VitalAssessment | None,
     patient_answers: list[PatientAnswer],
-) -> Phase3ReasoningOutcome:
-    """Run the staged fallback policy used for Phase 3 reasoning and debugging."""
-    signals = extract_phase3_signals(
+) -> ClinicalReasoningOutcome:
+    """Run the deterministic fallback policy used for reasoning and debug traces."""
+    signals = extract_reasoning_signals(
         event=event,
         patient_profile=patient_profile,
         patient_answers=patient_answers,
@@ -362,7 +362,7 @@ def run_phase3_reasoning(
         action_reason=action_reason,
     )
 
-    return Phase3ReasoningOutcome(
+    return ClinicalReasoningOutcome(
         signals=signals,
         severity=severity,
         recommended_action=action,
@@ -378,7 +378,7 @@ def run_phase3_reasoning(
 
 def _build_response_plan(
     *,
-    signals: Phase3SignalBundle,
+    signals: ReasoningSignalBundle,
     severity: str,
     action: str,
     action_reason: str,
@@ -436,7 +436,7 @@ def _build_response_plan(
     )
 
 
-def build_reasoning_trace(outcome: Phase3ReasoningOutcome) -> ReasoningTraceSummary:
+def build_reasoning_trace(outcome: ClinicalReasoningOutcome) -> ReasoningTraceSummary:
     """Create the compact, non-chain-of-thought debug trace shown in the MVP."""
     return ReasoningTraceSummary(
         top_red_flags=outcome.signals.red_flags[:5],
@@ -451,11 +451,11 @@ def build_reasoning_trace(outcome: Phase3ReasoningOutcome) -> ReasoningTraceSumm
     )
 
 
-def render_phase3_context(outcome: Phase3ReasoningOutcome) -> str:
-    """Render the staged signals into prompt-friendly text for the live reasoning model."""
+def render_clinical_reasoning_context(outcome: ClinicalReasoningOutcome) -> str:
+    """Render deterministic reasoning signals into prompt-friendly text for the live reasoning model."""
     trace = build_reasoning_trace(outcome)
     return (
-        "Phase 3 staged reasoning context:\n"
+        "Deterministic clinical reasoning context:\n"
         f"- Top red flags: {', '.join(trace.top_red_flags) or 'None'}\n"
         f"- Protective signals: {', '.join(trace.top_protective_signals) or 'None'}\n"
         f"- Vulnerability modifiers: {', '.join(trace.vulnerability_modifiers) or 'None'}\n"
@@ -468,12 +468,12 @@ def render_phase3_context(outcome: Phase3ReasoningOutcome) -> str:
     )
 
 
-def apply_phase3_defaults(
+def apply_reasoning_defaults(
     *,
     assessment: ClinicalAssessment,
-    outcome: Phase3ReasoningOutcome,
+    outcome: ClinicalReasoningOutcome,
 ) -> ClinicalAssessment:
-    """Backfill additive Phase 3 fields so MVP testing stays consistent across live and fallback paths."""
+    """Backfill additive reasoning fields so live and fallback paths stay consistent."""
     merged_red_flags = assessment.red_flags or outcome.signals.red_flags
     merged_protective_signals = assessment.protective_signals or outcome.signals.protective_signals
     merged_suspected_risks = assessment.suspected_risks or outcome.signals.suspected_risks[:5]

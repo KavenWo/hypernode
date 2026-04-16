@@ -1,6 +1,6 @@
 {
-  "description": "Phase 3 reasoning policy asset for structured signal extraction, missing-fact prioritization, severity selection, action selection, uncertainty behavior, and MVP debug tracing.",
-  "policy_version": "phase3_reasoning_v1",
+  "description": "Clinical reasoning policy asset for structured signal extraction, missing-fact prioritization, severity selection, action selection, uncertainty behavior, and debug tracing.",
+  "policy_version": "clinical_reasoning_policy_v1",
   "signal_outputs": [
     "red_flags",
     "protective_signals",

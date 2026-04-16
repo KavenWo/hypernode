@@ -1,4 +1,4 @@
-"""Smoke checks for the Phase 3 staged reasoning helpers and policy asset."""
+"""Smoke checks for the deterministic clinical reasoning policy and policy asset."""
 
 import sys
 from pathlib import Path
@@ -6,18 +6,21 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))
 
-from agents.reasoning.phase3_reasoning import load_phase3_reasoning_policy, run_phase3_reasoning
+from agents.reasoning.clinical_reasoning_policy import (
+    load_clinical_reasoning_policy,
+    run_clinical_reasoning_policy,
+)
 from agents.shared.schemas import FallEvent, PatientAnswer, UserMedicalProfile, VisionAssessment, VitalAssessment
 
 
-def test_phase3_policy_file_loads() -> None:
-    policy = load_phase3_reasoning_policy()
-    assert policy["policy_version"] == "phase3_reasoning_v1"
+def test_clinical_reasoning_policy_file_loads() -> None:
+    policy = load_clinical_reasoning_policy()
+    assert policy["policy_version"] == "clinical_reasoning_policy_v1"
     assert "breathing_status_unconfirmed" in policy["missing_fact_priority"]
 
 
-def test_phase3_reasoning_escalates_explicit_airway_case() -> None:
-    outcome = run_phase3_reasoning(
+def test_clinical_reasoning_policy_escalates_explicit_airway_case() -> None:
+    outcome = run_clinical_reasoning_policy(
         event=FallEvent(
             user_id="u1",
             timestamp="2024-04-10T12:00:00Z",
@@ -52,8 +55,8 @@ def test_phase3_reasoning_escalates_explicit_airway_case() -> None:
     )
 
 
-def test_phase3_reasoning_surfaces_priority_missing_fact() -> None:
-    outcome = run_phase3_reasoning(
+def test_clinical_reasoning_policy_surfaces_priority_missing_fact() -> None:
+    outcome = run_clinical_reasoning_policy(
         event=FallEvent(
             user_id="u2",
             timestamp="2024-04-10T12:00:00Z",
@@ -84,8 +87,8 @@ def test_phase3_reasoning_surfaces_priority_missing_fact() -> None:
     assert outcome.response_plan.notification_actions
 
 
-def test_phase3_reasoning_keeps_simple_fall_in_support_flow() -> None:
-    outcome = run_phase3_reasoning(
+def test_clinical_reasoning_policy_keeps_simple_fall_in_support_flow() -> None:
+    outcome = run_clinical_reasoning_policy(
         event=FallEvent(
             user_id="u3",
             timestamp="2024-04-10T12:00:00Z",

@@ -111,6 +111,46 @@ def _merge_assessment_into_analysis(
     return analysis.model_copy(update={"immediate_step": immediate_step})
 
 
+def _apply_assessment_handoff_to_analysis(
+    *,
+    analysis: CommunicationAgentAnalysis,
+    assessment: FallAssessment | None,
+) -> CommunicationAgentAnalysis:
+    if assessment is None:
+        return analysis
+
+    handoff = assessment.communication_handoff
+    if not handoff.primary_message and not handoff.next_question and not handoff.immediate_step:
+        return analysis
+
+    followup_parts: list[str] = []
+    if handoff.primary_message:
+        followup_parts.append(handoff.primary_message.strip())
+    if handoff.ask_followup and handoff.next_question:
+        followup_parts.append(handoff.next_question.strip())
+
+    guidance_intent = {
+        "urgent_instruction": "instruction",
+        "status_update": "reassure",
+        "instruction": "instruction",
+        "reassure": "reassure",
+        "question": "question",
+    }.get(handoff.mode, analysis.guidance_intent)
+
+    immediate_step = handoff.immediate_step or analysis.immediate_step
+    followup_text = " ".join(part for part in followup_parts if part).strip() or analysis.followup_text
+
+    return analysis.model_copy(
+        update={
+            "followup_text": followup_text,
+            "guidance_intent": guidance_intent,
+            "next_focus": handoff.next_focus or analysis.next_focus,
+            "immediate_step": immediate_step,
+            "quick_replies": handoff.quick_replies or analysis.quick_replies,
+        }
+    )
+
+
 def build_execution_updates(assessment: FallAssessment) -> list[ExecutionUpdate]:
     updates: list[ExecutionUpdate] = []
 
@@ -313,6 +353,10 @@ async def run_fall_conversation_turn(
             "reasoning_reason": analysis.reasoning_reason if analysis.reasoning_reason else interaction.reasoning_refresh.reason,
         }
     )
+    final_analysis = _apply_assessment_handoff_to_analysis(
+        analysis=final_analysis,
+        assessment=existing_assessment,
+    )
     current_session = fall_session_store.get_session(session.session_id) or session
     final_analysis = _apply_execution_context_to_reply(
         session_id=session.session_id,
@@ -400,12 +444,17 @@ async def run_fall_conversation_turn(
 
 
 async def _run_session_reasoning_refresh(session_id: str) -> None:
-    session = fall_session_store.get_session(session_id)
+    session = fall_session_store.begin_reasoning_run(session_id=session_id)
     if session is None:
         return
 
     try:
-        logger.info("[Session %s] Background reasoning started", _short_session_id(session_id))
+        logger.info(
+            "[Session %s] Background reasoning started | input_version=%s requested_version=%s",
+            _short_session_id(session_id),
+            session.reasoning_active_version,
+            session.reasoning_requested_version,
+        )
         patient_answers = _answers_from_conversation_history(session.conversation_history)
         assessment = await run_fall_assessment(
             event=session.event,
@@ -417,14 +466,16 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
         )
         should_rerun = fall_session_store.complete_reasoning(
             session_id=session_id,
+            processed_version=session.reasoning_active_version,
             assessment=assessment,
             execution_updates=build_execution_updates(assessment),
         )
         logger.info(
-            "[Session %s] Background reasoning complete | severity=%s action=%s rerun=%s context_updated=true",
+            "[Session %s] Background reasoning complete | severity=%s action=%s processed_version=%s rerun=%s",
             _short_session_id(session_id),
             assessment.clinical_assessment.severity,
             assessment.action.recommended,
+            session.reasoning_active_version,
             should_rerun,
         )
         if should_rerun:

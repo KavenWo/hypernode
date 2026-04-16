@@ -31,7 +31,10 @@ class FallSessionRecord:
     reasoning_status: str = "idle"
     reasoning_reason: str = ""
     reasoning_error: str | None = None
-    reasoning_rerun_requested: bool = False
+    reasoning_input_version: int = 0
+    reasoning_requested_version: int = 0
+    reasoning_active_version: int = 0
+    reasoning_completed_version: int = 0
     version: int = 0
     execution_updates: list[ExecutionUpdate] = field(default_factory=list)
     announced_execution_types: set[str] = field(default_factory=set)
@@ -55,6 +58,7 @@ class FallSessionStore:
             event=event.model_copy(deep=True),
             vitals=vitals.model_copy(deep=True) if vitals else None,
             interaction_input=interaction_input.model_copy(deep=True),
+            reasoning_input_version=1,
             version=1,
         )
         with self._lock:
@@ -83,6 +87,7 @@ class FallSessionStore:
             record.event = event.model_copy(deep=True)
             record.vitals = vitals.model_copy(deep=True) if vitals else None
             record.interaction_input = interaction_input.model_copy(deep=True)
+            record.reasoning_input_version += 1
             self._touch_locked(record)
             return self._copy_record(record)
 
@@ -95,6 +100,8 @@ class FallSessionStore:
             if record is None:
                 return None
             record.conversation_history.extend(clean_messages)
+            if any(message.role not in {"assistant", "system"} for message in clean_messages):
+                record.reasoning_input_version += 1
             self._touch_locked(record)
             return self._copy_record(record)
 
@@ -119,22 +126,38 @@ class FallSessionStore:
             record = self._sessions.get(session_id)
             if record is None:
                 return False
+            record.reasoning_requested_version = max(
+                record.reasoning_requested_version,
+                record.reasoning_input_version,
+            )
             if record.reasoning_status == "pending":
-                record.reasoning_rerun_requested = True
                 record.reasoning_reason = reason
                 self._touch_locked(record)
                 return False
             record.reasoning_status = "pending"
             record.reasoning_reason = reason
             record.reasoning_error = None
-            record.reasoning_rerun_requested = False
+            record.reasoning_active_version = 0
             self._touch_locked(record)
             return True
+
+    def begin_reasoning_run(self, *, session_id: str) -> FallSessionRecord | None:
+        with self._lock:
+            record = self._sessions.get(session_id)
+            if record is None or record.reasoning_status != "pending":
+                return None
+            record.reasoning_active_version = max(
+                record.reasoning_requested_version,
+                record.reasoning_input_version,
+            )
+            self._touch_locked(record)
+            return self._copy_record(record)
 
     def complete_reasoning(
         self,
         *,
         session_id: str,
+        processed_version: int,
         assessment: FallAssessment,
         assistant_message: ConversationMessage | None = None,
         execution_updates: list[ExecutionUpdate] | None = None,
@@ -157,12 +180,13 @@ class FallSessionStore:
                 )
                 if should_append:
                     record.conversation_history.append(assistant_message.model_copy(deep=True))
-            if record.reasoning_rerun_requested:
-                record.reasoning_rerun_requested = False
+            if record.reasoning_requested_version > processed_version:
                 record.reasoning_status = "pending"
-                record.reasoning_reason = "A newer responder update arrived. Refreshing reasoning."
+                record.reasoning_reason = "Newer clinical input arrived. Refreshing reasoning."
                 self._touch_locked(record)
                 return True
+            record.reasoning_completed_version = processed_version
+            record.reasoning_active_version = 0
             record.reasoning_status = "completed"
             record.reasoning_reason = "Latest reasoning snapshot is ready."
             self._touch_locked(record)
@@ -183,13 +207,13 @@ class FallSessionStore:
             record = self._sessions.get(session_id)
             if record is None:
                 return False
-            if record.reasoning_rerun_requested:
-                record.reasoning_rerun_requested = False
+            if record.reasoning_requested_version > record.reasoning_active_version:
                 record.reasoning_status = "pending"
-                record.reasoning_reason = "Retrying reasoning after a newer responder update."
+                record.reasoning_reason = "Retrying reasoning after newer clinical input arrived."
                 record.reasoning_error = error_message
                 self._touch_locked(record)
                 return True
+            record.reasoning_active_version = 0
             record.reasoning_status = "failed"
             record.reasoning_error = error_message
             record.reasoning_reason = "Background reasoning failed."
@@ -214,7 +238,10 @@ class FallSessionStore:
             reasoning_status=record.reasoning_status,
             reasoning_reason=record.reasoning_reason,
             reasoning_error=record.reasoning_error,
-            reasoning_rerun_requested=record.reasoning_rerun_requested,
+            reasoning_input_version=record.reasoning_input_version,
+            reasoning_requested_version=record.reasoning_requested_version,
+            reasoning_active_version=record.reasoning_active_version,
+            reasoning_completed_version=record.reasoning_completed_version,
             version=record.version,
             execution_updates=[item.model_copy(deep=True) for item in record.execution_updates],
             announced_execution_types=set(record.announced_execution_types),

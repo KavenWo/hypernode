@@ -28,7 +28,7 @@ uv run uvicorn app.main:app --reload
 
 ```powershell
 cd backend
-uv run tests/test_phase3_reasoning.py
+uv run tests/test_clinical_reasoning_policy.py
 uv run tests/test_phase2_retrieval_policy.py
 uv run tests/test_phase2_retrieval_engine.py
 uv run tests/test_phase2_guidance_normalizer.py
@@ -133,7 +133,7 @@ is `emergency_dispatch`.
 - `agents/shared/`: Shared config and schemas used across the backend.
 - `agents/sentinel/`: Event and vitals inspection logic.
 - `agents/triage/`: Question generation for deterministic fall intake and evaluation flows.
-- `agents/reasoning/`: Clinical reasoning agent and Phase 3 staged reasoning helpers.
+- `agents/reasoning/`: Clinical reasoning service and deterministic reasoning policy helpers.
 - `agents/communication/`: Phase 4 interaction policy and communication analysis/render helpers.
 - `agents/bystander/`: Grounded guidance retrieval and bystander instruction helpers.
 - `agents/coordinator/`: Older dispatch decision logic kept for experiments.
@@ -146,7 +146,7 @@ is `emergency_dispatch`.
 - `tests/test_phase2_guidance_normalizer.py`: Unit checks for guidance shaping from retrieval buckets.
 - `tests/test_phase2_retrieval_engine.py`: Unit checks for bucketed retrieval output.
 - `tests/test_phase2_retrieval_policy.py`: Unit checks for retrieval intent and query planning.
-- `tests/test_phase3_reasoning.py`: Unit checks for the staged reasoning engine.
+- `tests/test_clinical_reasoning_policy.py`: Unit checks for the deterministic reasoning policy.
 - `tests/test_phase4_interaction.py`: Interaction-policy checks for target selection and refresh rules.
 - `tests/test_phase4_session_turn.py`: Session-loop checks for the conversation flow.
 - `evals/manual/deterministic_fall_flow_runner.py`: Manual runner for the deterministic fall evaluation flow using the active fall services.

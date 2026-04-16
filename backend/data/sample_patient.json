@@ -16,8 +16,7 @@
       "Penicillin"
     ],
     "emergency_contacts": [
-      "+60123456789",
-      "+60199887766"
+      "+60123456789"
     ],
     "blood_thinners": true,
     "mobility_support": true,
@@ -25,6 +24,46 @@
     "address": "Kuala Lumpur, Malaysia"
   },
   "profiles": [
+    {
+      "user_id": "user_healthy_001",
+      "full_name": "Daniel Tan",
+      "age": 34,
+      "pre_existing_conditions": [],
+      "medications": [],
+      "allergies": [],
+      "emergency_contacts": [
+        "+60122201445"
+      ],
+      "blood_thinners": false,
+      "mobility_support": false,
+      "primary_language": "en",
+      "address": "Petaling Jaya, Malaysia"
+    },
+    {
+      "user_id": "user_mobility_001",
+      "full_name": "Puan Salmah Yusof",
+      "age": 76,
+      "pre_existing_conditions": [
+        "Osteoarthritis",
+        "Sarcopenia",
+        "History of prior fall"
+      ],
+      "medications": [
+        "Paracetamol 500mg",
+        "Vitamin D3",
+        "Losartan 50mg"
+      ],
+      "allergies": [
+        "NSAIDs"
+      ],
+      "emergency_contacts": [
+        "+60169982104"
+      ],
+      "blood_thinners": false,
+      "mobility_support": true,
+      "primary_language": "ms",
+      "address": "Ampang, Malaysia"
+    },
     {
       "user_id": "user_001",
       "full_name": "Amina Rahman",
@@ -42,28 +81,12 @@
         "Penicillin"
       ],
       "emergency_contacts": [
-        "+60123456789",
-        "+60199887766"
+        "+60123456789"
       ],
       "blood_thinners": true,
       "mobility_support": true,
       "primary_language": "en",
       "address": "Kuala Lumpur, Malaysia"
-    },
-    {
-      "user_id": "user_healthy_001",
-      "full_name": "Daniel Tan",
-      "age": 34,
-      "pre_existing_conditions": [],
-      "medications": [],
-      "allergies": [],
-      "emergency_contacts": [
-        "+60112233445"
-      ],
-      "blood_thinners": false,
-      "mobility_support": false,
-      "primary_language": "en",
-      "address": "Petaling Jaya, Malaysia"
     }
   ]
 }

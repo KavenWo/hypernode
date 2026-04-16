@@ -101,7 +101,7 @@ function makeInteractionPayload(interaction, latestMessage) {
 export default function MvpTestPage() {
   const [event, setEvent] = useState(DEFAULT_EVENT);
   const [vitals, setVitals] = useState(DEFAULT_VITALS);
-  const [interaction, setInteraction] = useState(DEFAULT_INTERACTION);
+  const [interaction] = useState(DEFAULT_INTERACTION);
   const [sessionId, setSessionId] = useState("");
   const [status, setStatus] = useState(null);
   const [patients, setPatients] = useState([]);
@@ -178,7 +178,7 @@ export default function MvpTestPage() {
             setEvent((current) => ({ ...current, user_id: nextPatients[0].user_id }));
           }
         }
-      } catch (_err) {
+      } catch {
         if (!ignore) {
           setStatus({
             backend_ok: false,
@@ -201,10 +201,6 @@ export default function MvpTestPage() {
 
   function updateVitals(field, value) {
     setVitals((current) => ({ ...current, [field]: value }));
-  }
-
-  function updateInteraction(field, value) {
-    setInteraction((current) => ({ ...current, [field]: value }));
   }
 
   function resetConversation() {
