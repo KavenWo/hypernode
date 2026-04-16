@@ -1,0 +1,74 @@
+{
+  "description": "Focused Phase 3 scenario pack used by the MVP to test staged reasoning, missing-fact handling, uncertainty behavior, and action selection.",
+  "scenarios": [
+    {
+      "id": "explicit_airway_emergency",
+      "label": "Explicit Airway Emergency",
+      "description": "Bystander reports abnormal breathing and poor responsiveness after a high-confidence fall.",
+      "expected_focus": "Immediate red flags should override uncertainty and push emergency dispatch.",
+      "event": {
+        "user_id": "user_healthy_001",
+        "timestamp": "2024-04-10T12:00:00Z",
+        "motion_state": "no_movement",
+        "confidence_score": 0.96
+      },
+      "vitals": {
+        "heart_rate": 46,
+        "blood_pressure_systolic": 86,
+        "blood_pressure_diastolic": 52,
+        "blood_oxygen_sp02": 85
+      },
+      "answers": {
+        "consciousness": "The patient is barely responding and looks confused.",
+        "pain_mobility": "He is breathing strangely and not answering properly.",
+        "breathing_bleeding": "I am a bystander and he is breathing abnormally after the fall."
+      }
+    },
+    {
+      "id": "critical_but_head_strike_unconfirmed",
+      "label": "Critical With Missing Head Strike",
+      "description": "Older adult on blood thinners with a severe fall and limited answers, but no confirmed head strike yet.",
+      "expected_focus": "The system should surface head strike as the top missing fact and prefer confirmation-pending escalation.",
+      "event": {
+        "user_id": "user_001",
+        "timestamp": "2024-04-10T12:00:00Z",
+        "motion_state": "rapid_descent",
+        "confidence_score": 0.94
+      },
+      "vitals": {
+        "heart_rate": 112,
+        "blood_pressure_systolic": 94,
+        "blood_pressure_diastolic": 60,
+        "blood_oxygen_sp02": 92
+      },
+      "answers": {
+        "consciousness": "Yes, I am awake but dizzy.",
+        "pain_mobility": "I have strong pain and cannot get up safely.",
+        "head_injury_blood_thinner": "I take blood thinners, but I am not sure if I hit my head."
+      }
+    },
+    {
+      "id": "conflicting_reports_monitor_or_family",
+      "label": "Conflicting Stability Signals",
+      "description": "Patient reports breathing normally but also gives signals that conflict with stable mobility.",
+      "expected_focus": "Contradictions should reduce confidence and keep the reasoning trace easy to inspect.",
+      "event": {
+        "user_id": "user_healthy_001",
+        "timestamp": "2024-04-10T12:00:00Z",
+        "motion_state": "stumble",
+        "confidence_score": 0.61
+      },
+      "vitals": {
+        "heart_rate": 84,
+        "blood_pressure_systolic": 124,
+        "blood_pressure_diastolic": 80,
+        "blood_oxygen_sp02": 97
+      },
+      "answers": {
+        "consciousness": "Yes, I am awake and speaking clearly.",
+        "pain_mobility": "I only have mild pain, but I also cannot stand for long.",
+        "observation": "I am breathing normally and did not pass out."
+      }
+    }
+  ]
+}

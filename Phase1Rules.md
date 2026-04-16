@@ -525,6 +525,29 @@ Phase 1 target response structure:
 - confidence must include score and band
 - reasoning must be short and operational
 
+### Schema Evolution Note
+
+This Phase 1 schema should be treated as the stable `v1` contract.
+
+However, it should not be treated as the final long-term action structure.
+
+Phase 3 is expected to evolve the action model from:
+
+- one primary recommended action
+
+into a richer operational structure such as:
+
+- primary escalation action
+- notification actions
+- bystander actions
+- follow-up actions
+
+So the Phase 1 schema should be considered:
+
+- stable enough for consistency
+- simple enough for MVP use
+- intentionally evolvable for later multi-action reasoning
+
 ---
 
 ## Reasoning Output Rules
@@ -596,6 +619,7 @@ These items are intentionally left tunable after implementation:
 - exact countdown duration
 - exact trigger threshold for automatic dispatch without confirmation
 - expanded red-flag coverage for future scenarios
+- evolution path from single-action output to multi-action operational output
 
 These should be refined in later phases using scenario testing and evaluation.
 

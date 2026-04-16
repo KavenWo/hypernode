@@ -25,3 +25,4 @@ def test_retrieval_engine_returns_bucketed_debug_output() -> None:
 
     assert "head_injury_blood_thinners" in result["selected_intents"]
     assert isinstance(result["bucketed_snippets"], dict)
+    assert isinstance(result["queries_by_bucket"], dict)

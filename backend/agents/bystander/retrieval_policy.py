@@ -10,6 +10,7 @@ from agents.shared.schemas import PatientAnswer, UserMedicalProfile
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 POLICY_PATH = BACKEND_DIR / "data" / "phase2_retrieval_policy.json"
+BUCKET_POLICY_PATH = BACKEND_DIR / "data" / "phase2_bucket_query_policy.json"
 
 
 def _normalized_answer_text(patient_answers: list[PatientAnswer]) -> str:
@@ -62,6 +63,12 @@ def _responder_mode(patient_answers: list[PatientAnswer]) -> str:
 @lru_cache(maxsize=1)
 def load_phase2_retrieval_policy() -> dict:
     with POLICY_PATH.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+@lru_cache(maxsize=1)
+def load_phase2_bucket_query_policy() -> dict:
+    with BUCKET_POLICY_PATH.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -135,4 +142,43 @@ def build_phase2_retrieval_plan(
         "selected_intents": selected_intents,
         "queries": selected_queries,
         "primary_query": selected_queries[0] if selected_queries else policy["intents"]["fall_general_first_aid"]["queries"][0],
+    }
+
+
+def build_phase2_bucket_query_plan(
+    *,
+    patient_profile: UserMedicalProfile,
+    patient_answers: list[PatientAnswer],
+    severity_hint: str | None = None,
+) -> dict:
+    retrieval_plan = build_phase2_retrieval_plan(
+        patient_profile=patient_profile,
+        patient_answers=patient_answers,
+        severity_hint=severity_hint,
+    )
+    bucket_policy = load_phase2_bucket_query_policy()
+
+    queries_by_bucket: dict[str, list[str]] = {}
+    bucket_to_intent: dict[str, str] = {}
+
+    for intent in retrieval_plan["selected_intents"]:
+        intent_policy = bucket_policy["intents"].get(intent, {})
+        bucket_queries = intent_policy.get("bucket_queries", {})
+        for bucket_name, queries in bucket_queries.items():
+            if bucket_name not in queries_by_bucket and queries:
+                queries_by_bucket[bucket_name] = queries
+                bucket_to_intent[bucket_name] = intent
+
+    if not queries_by_bucket:
+        fallback_policy = bucket_policy["intents"].get("fall_general_first_aid", {})
+        for bucket_name, queries in fallback_policy.get("bucket_queries", {}).items():
+            if queries:
+                queries_by_bucket[bucket_name] = queries
+                bucket_to_intent[bucket_name] = "fall_general_first_aid"
+
+    return {
+        **retrieval_plan,
+        "bucket_query_policy_version": bucket_policy["policy_version"],
+        "queries_by_bucket": queries_by_bucket,
+        "bucket_to_intent": bucket_to_intent,
     }

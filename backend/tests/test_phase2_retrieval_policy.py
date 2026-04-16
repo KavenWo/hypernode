@@ -6,7 +6,11 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))
 
-from agents.bystander.retrieval_policy import build_phase2_retrieval_plan, load_phase2_retrieval_policy
+from agents.bystander.retrieval_policy import (
+    build_phase2_bucket_query_plan,
+    build_phase2_retrieval_plan,
+    load_phase2_retrieval_policy,
+)
 from agents.shared.schemas import PatientAnswer, UserMedicalProfile
 
 
@@ -45,3 +49,17 @@ def test_prioritizes_head_injury_on_blood_thinners() -> None:
 
     assert "head_injury_blood_thinners" in plan["selected_intents"]
     assert any("blood thinners" in query for query in plan["queries"])
+
+
+def test_builds_bucket_queries_for_mixed_case() -> None:
+    profile = UserMedicalProfile(user_id="u4", age=79)
+    answers = [PatientAnswer(question_id="breathing", answer="The patient is breathing strangely and I am a bystander.")]
+
+    plan = build_phase2_bucket_query_plan(
+        patient_profile=profile,
+        patient_answers=answers,
+        severity_hint="critical",
+    )
+
+    assert "cpr_or_airway_steps" in plan["queries_by_bucket"]
+    assert "red_flags_and_escalation" in plan["queries_by_bucket"]

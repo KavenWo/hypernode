@@ -13,6 +13,7 @@ def build_clinical_reasoning_prompt(
     vision_assessment: VisionAssessment,
     vital_assessment: VitalAssessment | None,
     grounded_medical_guidance: list[str],
+    phase3_context: str,
     patient_answers: list[PatientAnswer] | None = None,
 ) -> str:
     vitals_context = (
@@ -33,6 +34,13 @@ def build_clinical_reasoning_prompt(
     Use only these severity values: low, medium, critical.
     Use only these action values: monitor, contact_family, dispatch_pending_confirmation, emergency_dispatch.
     Use only these confidence bands: low, medium, high.
+
+    Follow a staged Phase 3 reasoning process:
+    1. Normalize raw answers into structured signals.
+    2. Identify the highest-priority missing fact.
+    3. Choose severity separately from action.
+    4. Build a multi-track response plan.
+    5. Explain how uncertainty changed behavior.
 
     Normalize red flags into these vocabulary keys when supported by the evidence:
     - unresponsive
@@ -60,6 +68,7 @@ def build_clinical_reasoning_prompt(
     - mobility_support_user
     - recurrent_falls
 
+    Return vulnerability_modifiers, missing_facts, contradictions, hard_emergency_triggered, blocking_uncertainties, override_policy, response_plan, and reasoning_trace when the evidence supports them.
     Separate observed facts, reported facts, grounded medical support, and uncertainty.
     Do not use fall detection confidence as a synonym for medical severity.
     Keep reasoning_summary short and operational.
@@ -78,6 +87,7 @@ def build_clinical_reasoning_prompt(
     {answer_context}
     - Grounded medical guidance:
     {guidance_context}
+    - {phase3_context}
 
     Decision rules:
     - If rapid_descent or no_movement occurs with confidence above 0.85, bias toward critical severity.
@@ -85,8 +95,10 @@ def build_clinical_reasoning_prompt(
     - If the patient reports trouble breathing, heavy bleeding, head strike on blood thinners, loss of consciousness, or inability to move safely, bias toward critical severity.
     - Elderly patients, blood thinners, or concerning fall red flags should increase caution.
     - If explicit life-threatening red flags are present, prefer emergency_dispatch unless a brief confirmation window is clearly safer and still appropriate.
+    - If explicit life-threatening red flags are present, hard_emergency_triggered should usually be true and blocking_uncertainties should not stop emergency escalation.
     - If the case is concerning but not clearly life-threatening, prefer contact_family.
     - If the case appears stable with limited evidence of danger, prefer monitor.
+    - The response_plan should separate escalation, notifications, bystander actions, and follow-up actions.
 
     Return a structured clinical assessment.
     """

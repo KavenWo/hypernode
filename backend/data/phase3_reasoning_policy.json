@@ -1,0 +1,56 @@
+{
+  "description": "Phase 3 reasoning policy asset for structured signal extraction, missing-fact prioritization, severity selection, action selection, uncertainty behavior, and MVP debug tracing.",
+  "policy_version": "phase3_reasoning_v1",
+  "signal_outputs": [
+    "red_flags",
+    "protective_signals",
+    "suspected_risks",
+    "vulnerability_modifiers",
+    "missing_facts",
+    "contradictions",
+    "uncertainty"
+  ],
+  "missing_fact_priority": [
+    "breathing_status_unconfirmed",
+    "bleeding_status_unconfirmed",
+    "responsiveness_unconfirmed",
+    "head_strike_unconfirmed"
+  ],
+  "severity_inputs": [
+    "event_risk",
+    "vitals",
+    "red_flags",
+    "protective_signals",
+    "vulnerability_modifiers",
+    "grounded_medical_support"
+  ],
+  "action_policy": {
+    "low": "monitor",
+    "medium": "contact_family",
+    "critical_with_immediate_danger": "emergency_dispatch",
+    "critical_with_key_unknown": "dispatch_pending_confirmation"
+  },
+  "response_tracks": [
+    "escalation_action",
+    "notification_actions",
+    "bystander_actions",
+    "followup_actions"
+  ],
+  "uncertainty_behavior": [
+    "lower_confidence_when_key_facts_are_missing",
+    "allow_confirmation_pending_for_critical_without_explicit_life_threat",
+    "override_uncertainty_when_explicit_danger_signs_exist",
+    "do_not_block_dispatch_forever_when_no_response_makes_waiting_unsafe"
+  ],
+  "debug_trace_fields": [
+    "top_red_flags",
+    "top_protective_signals",
+    "vulnerability_modifiers",
+    "missing_facts",
+    "priority_missing_fact",
+    "contradictions",
+    "severity_reason",
+    "action_reason",
+    "uncertainty_effect"
+  ]
+}

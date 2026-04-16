@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from agents.bystander.knowledge_base import retrieve_medical_guidance_with_source
-from agents.bystander.retrieval_policy import build_phase2_retrieval_plan
+from agents.bystander.retrieval_policy import build_phase2_bucket_query_plan
 from agents.shared.schemas import PatientAnswer, UserMedicalProfile
 
 BUCKET_PRIORITY = [
@@ -28,26 +28,7 @@ BUCKET_LIMITS = {
     "monitoring_and_followup": 2,
 }
 
-INTENT_BUCKETS = {
-    "fall_general_first_aid": ["immediate_actions", "scene_safety", "monitoring_and_followup"],
-    "fall_red_flags": ["red_flags_and_escalation", "monitoring_and_followup"],
-    "bystander_check_consciousness": ["bystander_instructions", "red_flags_and_escalation"],
-    "bystander_check_breathing": ["bystander_instructions", "cpr_or_airway_steps"],
-    "unconscious_after_fall": ["red_flags_and_escalation", "cpr_or_airway_steps", "bystander_instructions"],
-    "abnormal_breathing_after_fall": ["red_flags_and_escalation", "cpr_or_airway_steps"],
-    "cpr_trigger_guidance": ["cpr_or_airway_steps", "red_flags_and_escalation"],
-    "head_injury_after_fall": ["red_flags_and_escalation", "immediate_actions", "monitoring_and_followup"],
-    "head_injury_blood_thinners": ["red_flags_and_escalation", "immediate_actions"],
-    "severe_bleeding_after_fall": ["immediate_actions", "red_flags_and_escalation", "do_not_do_warnings"],
-    "possible_spinal_injury": ["do_not_do_warnings", "immediate_actions", "red_flags_and_escalation"],
-    "fracture_or_cannot_stand": ["immediate_actions", "do_not_do_warnings", "red_flags_and_escalation"],
-    "do_not_move_possible_injury": ["do_not_do_warnings", "immediate_actions"],
-    "monitor_low_risk_fall": ["monitoring_and_followup", "immediate_actions"],
-    "bystander_instruction_mode": ["bystander_instructions", "scene_safety", "immediate_actions"],
-}
-
-
-def _score_snippet(snippet: str, query: str, intent: str) -> int:
+def _score_snippet(snippet: str, query: str, intent: str, bucket_name: str) -> int:
     lowered_snippet = snippet.lower()
     lowered_query = query.lower()
     score = 0
@@ -62,6 +43,12 @@ def _score_snippet(snippet: str, query: str, intent: str) -> int:
         score += 3
     if "bystander" in intent and any(keyword in lowered_snippet for keyword in ["check", "ask", "look", "help"]):
         score += 2
+    if bucket_name == "do_not_do_warnings" and any(keyword in lowered_snippet for keyword in ["do not", "don't", "avoid", "not to"]):
+        score += 4
+    if bucket_name == "cpr_or_airway_steps" and any(keyword in lowered_snippet for keyword in ["breathing", "airway", "cpr", "aed"]):
+        score += 4
+    if bucket_name == "red_flags_and_escalation" and any(keyword in lowered_snippet for keyword in ["emergency", "urgent", "warning", "high risk"]):
+        score += 4
     return score
 
 
@@ -84,33 +71,45 @@ def run_phase2_retrieval(
     severity_hint: str | None = None,
     max_results_per_query: int = 2,
 ) -> dict:
-    retrieval_plan = build_phase2_retrieval_plan(
+    retrieval_plan = build_phase2_bucket_query_plan(
         patient_profile=patient_profile,
         patient_answers=patient_answers,
         severity_hint=severity_hint,
     )
 
-    query_pairs = list(zip(retrieval_plan["selected_intents"], retrieval_plan["queries"]))
     bucket_entries: dict[str, list[dict]] = defaultdict(list)
     all_references: list[dict] = []
     sources_seen: list[str] = []
+    queries_by_bucket: dict[str, list[str]] = {}
+    references_by_bucket: dict[str, list[dict]] = {}
+    bucket_sources: dict[str, str] = {}
 
-    for intent, query in query_pairs:
-        result = retrieve_medical_guidance_with_source(query, max_results=max_results_per_query)
-        if result["source"] not in sources_seen:
-            sources_seen.append(result["source"])
-        all_references.extend(result.get("references", []))
+    for bucket_name, queries in retrieval_plan["queries_by_bucket"].items():
+        bucket_intent = retrieval_plan["bucket_to_intent"].get(bucket_name, "fall_general_first_aid")
+        bucket_queries = []
+        bucket_references: list[dict] = []
 
-        buckets = INTENT_BUCKETS.get(intent, ["immediate_actions"])
-        for snippet in result["snippets"]:
-            entry = {
-                "snippet": snippet.strip(),
-                "intent": intent,
-                "query": query,
-                "score": _score_snippet(snippet, query, intent),
-            }
-            for bucket in buckets:
-                bucket_entries[bucket].append(entry)
+        for query in queries[:1]:
+            result = retrieve_medical_guidance_with_source(query, max_results=max_results_per_query)
+            bucket_queries.append(query)
+            bucket_sources[bucket_name] = result["source"]
+            if result["source"] not in sources_seen:
+                sources_seen.append(result["source"])
+            bucket_references.extend(result.get("references", []))
+            all_references.extend(result.get("references", []))
+
+            for snippet in result["snippets"]:
+                bucket_entries[bucket_name].append(
+                    {
+                        "snippet": snippet.strip(),
+                        "intent": bucket_intent,
+                        "query": query,
+                        "score": _score_snippet(snippet, query, bucket_intent, bucket_name),
+                    }
+                )
+
+        queries_by_bucket[bucket_name] = bucket_queries
+        references_by_bucket[bucket_name] = bucket_references[:4]
 
     selected_buckets: dict[str, list[str]] = {}
     for bucket_name, entries in bucket_entries.items():
@@ -127,10 +126,13 @@ def run_phase2_retrieval(
     return {
         "policy_version": retrieval_plan["policy_version"],
         "selected_intents": retrieval_plan["selected_intents"],
-        "queries": retrieval_plan["queries"],
+        "queries": [query for queries in queries_by_bucket.values() for query in queries],
         "primary_query": retrieval_plan["primary_query"],
         "retrieval_source": "+".join(sources_seen) if sources_seen else "fallback_file",
         "bucketed_snippets": selected_buckets,
         "guidance_snippets": _dedupe_preserve_order(prioritized_guidance)[:5],
         "references": all_references[:6],
+        "queries_by_bucket": queries_by_bucket,
+        "references_by_bucket": references_by_bucket,
+        "bucket_sources": bucket_sources,
     }

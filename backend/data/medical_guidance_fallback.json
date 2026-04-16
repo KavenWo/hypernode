@@ -14,5 +14,19 @@
     "If the person is not breathing normally and unresponsive, begin hands-only CPR.",
     "Push hard and fast in the center of the chest at about 100 to 120 compressions per minute.",
     "Continue until emergency services arrive or the person resumes normal breathing."
+  ],
+  "bystander_instructions": [
+    "Tell the bystander to check if the person responds when spoken to and touched gently.",
+    "Ask the bystander to look for normal breathing and report if breathing is slow, noisy, or absent.",
+    "Tell the bystander to stay with the patient and call emergency help if symptoms worsen."
+  ],
+  "do_not_do_warnings": [
+    "Do not help the person stand up quickly after a serious fall.",
+    "Do not move the person if spinal injury is suspected unless there is immediate danger.",
+    "Do not delay emergency help when breathing, bleeding, or confusion is concerning."
+  ],
+  "monitoring_and_followup": [
+    "Monitor for worsening headache, confusion, breathing changes, or inability to move safely.",
+    "Seek urgent help if new warning signs develop after the fall."
   ]
 }

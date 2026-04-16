@@ -13,6 +13,7 @@ The main objective was to improve:
 
 - retrieval planning
 - retrieval specificity
+- bucket-aware evidence separation
 - grounded guidance quality
 - debug visibility
 - MVP testing readiness
@@ -73,18 +74,34 @@ This matters because reasoning, instructions, and warnings should not all pull f
 
 ---
 
-### 4. MVP Retrieval Policy Asset
+### 4. Bucket-Aware Retrieval Separation
+
+We extended Phase 2 beyond simple bucket labeling and made retrieval bucket-aware for the MVP.
+
+That means the backend can now:
+
+- plan retrieval by bucket, not only by intent
+- issue separate queries for different grounded purposes
+- return bucket-level references
+- show which source was used for each bucket
+
+This is important because `red_flags_and_escalation`, `cpr_or_airway_steps`, `bystander_instructions`, and `immediate_actions` should not all depend on one shared query by default.
+
+---
+
+### 5. MVP Retrieval Policy Assets
 
 We added a machine-readable Phase 2 retrieval asset in the backend:
 
 - `backend/data/phase2_retrieval_policy.json`
+- `backend/data/phase2_bucket_query_policy.json`
 
 This means the retrieval policy is no longer only described in `.md` files.
 The MVP backend can now actually consume that policy for live retrieval planning.
 
 ---
 
-### 5. Retrieval Engine For The MVP
+### 6. Retrieval Engine For The MVP
 
 We added a lightweight Phase 2 retrieval engine in the backend:
 
@@ -96,15 +113,16 @@ The MVP can now:
 - detect likely retrieval signals from answers and profile
 - choose top intents
 - generate a small set of controlled queries
+- generate bucket-specific queries for mixed cases
 - retrieve grounded guidance
 - bucket grounded snippets
-- return retrieval debug information
+- return bucket-level retrieval debug information
 
 This is the first real product-facing version of the Phase 2 retrieval design.
 
 ---
 
-### 6. Guidance Normalization
+### 7. Guidance Normalization
 
 We added a normalization layer so bucketed retrieval evidence can be turned into cleaner product guidance.
 
@@ -119,7 +137,7 @@ This matters because raw grounded snippets are not always clean enough to show d
 
 ---
 
-### 7. Grounding Traceability In The MVP
+### 8. Grounding Traceability In The MVP
 
 The MVP response schema now includes retrieval debug fields inside grounding.
 
@@ -128,6 +146,9 @@ That includes:
 - `retrieval_intents`
 - `queries`
 - `buckets`
+- `queries_by_bucket`
+- `references_by_bucket`
+- `bucket_sources`
 - grounded snippet preview
 - references when available
 
@@ -135,7 +156,7 @@ This makes it much easier to inspect whether retrieval worked well or poorly for
 
 ---
 
-### 8. Phase 2 Scenario Pack
+### 9. Phase 2 Scenario Pack
 
 We added a simple scenario pack for retrieval-focused MVP testing:
 
@@ -151,7 +172,7 @@ This matters because Phase 2 needed a faster loop for checking retrieval behavio
 
 ---
 
-### 9. MVP Frontend Retrieval Debug View
+### 10. MVP Frontend Retrieval Debug View
 
 We extended the MVP test UI so retrieval behavior is visible during testing.
 
@@ -160,6 +181,9 @@ The frontend now shows:
 - selected retrieval intents
 - issued queries
 - retrieval buckets
+- bucket-specific queries
+- bucket-specific references
+- bucket-specific sources
 - grounded preview snippets
 - normalized escalation cues
 
@@ -183,7 +207,9 @@ After Phase 2:
 - retrieval is intent-based
 - query construction is controlled and more repeatable
 - multiple focused queries can be issued
+- mixed cases can trigger bucket-specific queries
 - grounded snippets are bucketed by purpose
+- bucket-specific references can be inspected in the MVP
 - guidance is normalized more deliberately
 - retrieval choices are visible in the MVP output
 - scenario-based retrieval testing is easier
@@ -213,9 +239,10 @@ Phase 2 should be considered complete if these are true:
 - retrieval uses intent-based planning instead of one generic query
 - the backend can consume a retrieval policy asset
 - multiple controlled queries can be generated for one case
+- mixed cases can issue separate bucket-aware queries
 - grounded snippets are grouped into functional buckets
 - guidance is normalized from bucketed evidence
-- grounding metadata exposes intents, queries, and buckets
+- grounding metadata exposes intents, queries, buckets, and bucket-level references
 - the MVP can load simple Phase 2 scenarios and inspect retrieval behavior
 
 ---
@@ -229,11 +256,13 @@ Phase 2 verification included:
 - backend sanity checks for guidance normalization
 - `uv run` verification for the scenario-pack route and normalization path
 - frontend production build verification for the updated MVP tester
+- MVP inspection showing live `vertex_ai_search` grounding with bucket-level query and reference visibility
 
 Local verification also showed that:
 
 - the Phase 2 retrieval path works even when Vertex AI Search is not configured
 - the fallback path still returns inspectable retrieval output for MVP testing
+- when Vertex AI Search is configured, the MVP can now surface live retrieval intents, issued queries, bucket-specific query plans, and bucket reference counts
 
 ---
 

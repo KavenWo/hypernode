@@ -1,3 +1,7 @@
+"""Shared Pydantic schemas for the MVP flow, including assessment output, retrieval grounding, and dispatch-facing structures."""
+
+from __future__ import annotations
+
 from pydantic import BaseModel, Field
 
 
@@ -21,13 +25,94 @@ class TriageQuestion(BaseModel):
     text: str = Field(..., description="Question shown to the patient or bystander.")
 
 
+class InteractionInput(BaseModel):
+    patient_response_status: str = Field(
+        default="unknown",
+        description="Current patient response state such as responsive, confused, unresponsive, unknown, or no_response.",
+    )
+    bystander_available: bool = Field(
+        default=False,
+        description="Whether a bystander is available to observe or help.",
+    )
+    bystander_can_help: bool = Field(
+        default=False,
+        description="Whether the bystander is actually able and willing to follow guidance.",
+    )
+    testing_assume_bystander: bool = Field(
+        default=False,
+        description="Testing override so the MVP can exercise bystander communication flows.",
+    )
+    active_execution_action: str | None = Field(
+        default=None,
+        description="Optional active execution script such as cpr_in_progress.",
+    )
+    message_text: str = Field(
+        default="",
+        description="Latest communication turn text used for selective reasoning refresh decisions.",
+    )
+    new_fact_keys: list[str] = Field(
+        default_factory=list,
+        description="Structured fact keys extracted from the latest turn.",
+    )
+    responder_mode_hint: str | None = Field(
+        default=None,
+        description="Optional responder-mode hint carried by the frontend session.",
+    )
+    responder_mode_changed: bool = Field(
+        default=False,
+        description="Whether the active responder changed since the previous turn.",
+    )
+    contradiction_detected: bool = Field(
+        default=False,
+        description="Whether the latest turn conflicts with established facts.",
+    )
+    no_response_timeout: bool = Field(
+        default=False,
+        description="Whether a no-response timeout fired before this turn.",
+    )
+
+
+class ReasoningRefreshSummary(BaseModel):
+    required: bool = Field(..., description="Whether a new reasoning pass should run for the current turn.")
+    reason: str = Field(..., description="Short explanation for the refresh decision.")
+    priority: str = Field(..., description="Priority band for the refresh trigger.")
+
+
+class InteractionSummary(BaseModel):
+    communication_target: str = Field(..., description="Who the system should address now.")
+    responder_mode: str = Field(..., description="Normalized responder mode for the current turn.")
+    guidance_style: str = Field(..., description="Instruction style for the current responder.")
+    interaction_mode: str = Field(..., description="Interaction mode such as patient_first_check or bystander_execution.")
+    rationale: str = Field(..., description="Short explanation for the interaction decision.")
+    reasoning_refresh: ReasoningRefreshSummary = Field(..., description="Whether the latest turn should refresh reasoning.")
+    testing_assume_bystander: bool = Field(
+        default=False,
+        description="Whether the current interaction path was forced into bystander testing mode.",
+    )
+
+
 class TriageQuestionSet(BaseModel):
     questions: list[TriageQuestion] = Field(..., description="Two to three targeted follow-up triage questions.")
+    interaction: InteractionSummary | None = Field(
+        default=None,
+        description="Interaction-layer metadata describing who the questions are aimed at.",
+    )
 
 
 class PatientAnswer(BaseModel):
     question_id: str = Field(..., description="Identifier matching the question that was asked.")
     answer: str = Field(..., description="Free-form patient or bystander answer.")
+
+
+class ConversationMessage(BaseModel):
+    role: str = Field(..., description="conversation role such as system, assistant, patient, or bystander.")
+    text: str = Field(..., description="Message content for the session transcript.")
+
+
+class ExecutionUpdate(BaseModel):
+    type: str = Field(..., description="Execution action key such as inform_family or emergency_dispatch.")
+    status: str = Field(..., description="Execution status such as planned, queued, completed, or skipped.")
+    detail: str = Field(..., description="Short human-readable explanation of what happened.")
 
 
 class VisionAssessment(BaseModel):
@@ -63,20 +148,30 @@ class ClinicalAssessment(BaseModel):
     red_flags: list[str] = Field(default_factory=list, description="Normalized red-flag keys.")
     protective_signals: list[str] = Field(default_factory=list, description="Signals that suggest stability.")
     suspected_risks: list[str] = Field(default_factory=list, description="Short suspected risk labels.")
+    vulnerability_modifiers: list[str] = Field(default_factory=list, description="Risk modifiers such as age, medications, or mobility concerns.")
+    missing_facts: list[str] = Field(default_factory=list, description="Important unknowns that could still change the next step.")
+    contradictions: list[str] = Field(default_factory=list, description="Conflicting signals that should lower certainty.")
     uncertainty: list[str] = Field(default_factory=list, description="Important unknowns or ambiguities.")
+    hard_emergency_triggered: bool = Field(default=False, description="Whether explicit life-threatening signs overrode uncertainty.")
+    blocking_uncertainties: list[str] = Field(default_factory=list, description="Unknowns that are still preventing a stronger escalation action.")
+    override_policy: str = Field(default="", description="Short explanation of whether uncertainty blocked or was overridden.")
     reasoning_summary: str = Field(..., description="Short explanation of why this severity and action were chosen.")
     recommended_action: str = Field(..., description="Recommended next action from the fixed action vocabulary.")
+    response_plan: "ResponsePlanSummary" = Field(default_factory=lambda: ResponsePlanSummary(), description="Structured multi-track operational response plan.")
+    reasoning_trace: "ReasoningTraceSummary" = Field(default_factory=lambda: ReasoningTraceSummary(), description="Compact Phase 3 reasoning trace for debugging and MVP inspection.")
 
 
 class FallQuestionsRequest(BaseModel):
     event: FallEvent
     vitals: VitalSigns | None = None
+    interaction: InteractionInput | None = None
 
 
 class FallAssessmentRequest(BaseModel):
     event: FallEvent
     vitals: VitalSigns | None = None
     patient_answers: list[PatientAnswer] = Field(default_factory=list)
+    interaction: InteractionInput | None = None
 
 
 class DispatchDecision(BaseModel):
@@ -98,6 +193,40 @@ class DetectionSummary(BaseModel):
     event_validity: str = Field(..., description="Normalized event validity such as likely_true or uncertain.")
 
 
+class ReasoningTraceSummary(BaseModel):
+    stage_version: str = Field(default="phase3_reasoning_v1", description="Reasoning policy version used for the staged Phase 3 trace.")
+    top_red_flags: list[str] = Field(default_factory=list, description="Most important red flags that drove the decision.")
+    top_protective_signals: list[str] = Field(default_factory=list, description="Protective signals that argued against escalation.")
+    vulnerability_modifiers: list[str] = Field(default_factory=list, description="Profile or context modifiers that increased caution.")
+    missing_facts: list[str] = Field(default_factory=list, description="Important unknowns still present after extraction.")
+    priority_missing_fact: str | None = Field(default=None, description="The single missing fact that matters most right now.")
+    contradictions: list[str] = Field(default_factory=list, description="Conflicting signals detected across answers, profile, or vitals.")
+    severity_reason: str = Field(default="", description="Short explanation of why this severity was chosen.")
+    action_reason: str = Field(default="", description="Short explanation of why this action was chosen.")
+    uncertainty_effect: str = Field(default="", description="How uncertainty changed confidence or action behavior.")
+
+
+class ResponseActionItem(BaseModel):
+    type: str = Field(..., description="Action vocabulary key for this operational step.")
+    priority: str = Field(default="secondary", description="Relative urgency such as immediate, secondary, or ongoing.")
+    reason: str = Field(default="", description="Short reason for including this action.")
+
+
+class EscalationActionSummary(BaseModel):
+    type: str = Field(default="none", description="Main escalation route such as none, dispatch_pending_confirmation, or emergency_dispatch.")
+    requires_confirmation: bool = Field(default=False, description="Whether a short confirmation window is still allowed.")
+    cancel_allowed: bool = Field(default=False, description="Whether the escalation can still be canceled.")
+    countdown_seconds: int | None = Field(default=None, description="Optional countdown before the escalation upgrades or executes.")
+    reason: str = Field(default="", description="Why this escalation track was chosen.")
+
+
+class ResponsePlanSummary(BaseModel):
+    escalation_action: EscalationActionSummary = Field(default_factory=EscalationActionSummary, description="Primary emergency escalation decision.")
+    notification_actions: list[ResponseActionItem] = Field(default_factory=list, description="Who else should be informed without blocking escalation.")
+    bystander_actions: list[ResponseActionItem] = Field(default_factory=list, description="Immediate helper actions that should happen on scene.")
+    followup_actions: list[ResponseActionItem] = Field(default_factory=list, description="Ongoing monitoring or reassessment actions after the first response.")
+
+
 class ClinicalAssessmentSummary(BaseModel):
     severity: str = Field(..., description="Overall severity for the incident.")
     clinical_confidence_score: float = Field(..., description="Numeric clinical confidence score.")
@@ -107,8 +236,16 @@ class ClinicalAssessmentSummary(BaseModel):
     red_flags: list[str] = Field(default_factory=list, description="Normalized red-flag keys.")
     protective_signals: list[str] = Field(default_factory=list, description="Signals that suggest stability.")
     suspected_risks: list[str] = Field(default_factory=list, description="Short suspected risk labels.")
+    vulnerability_modifiers: list[str] = Field(default_factory=list, description="Risk modifiers such as age, medications, or mobility concerns.")
+    missing_facts: list[str] = Field(default_factory=list, description="Important unknowns that could still change the next step.")
+    contradictions: list[str] = Field(default_factory=list, description="Conflicting signals that should lower certainty.")
     uncertainty: list[str] = Field(default_factory=list, description="Important unknowns or ambiguities.")
+    hard_emergency_triggered: bool = Field(default=False, description="Whether explicit life-threatening signs overrode uncertainty.")
+    blocking_uncertainties: list[str] = Field(default_factory=list, description="Unknowns that are still preventing a stronger escalation action.")
+    override_policy: str = Field(default="", description="Short explanation of whether uncertainty blocked or was overridden.")
     reasoning_summary: str = Field(..., description="Short explanation of the clinical reasoning result.")
+    response_plan: ResponsePlanSummary = Field(default_factory=ResponsePlanSummary, description="Structured multi-track operational response plan.")
+    reasoning_trace: ReasoningTraceSummary = Field(default_factory=ReasoningTraceSummary, description="Compact Phase 3 reasoning trace for debugging and MVP inspection.")
 
 
 class ActionSummary(BaseModel):
@@ -132,6 +269,9 @@ class GroundingSummary(BaseModel):
     retrieval_intents: list[str] = Field(default_factory=list, description="Selected retrieval intents used for this guidance run.")
     queries: list[str] = Field(default_factory=list, description="Ordered retrieval queries issued or planned for this guidance run.")
     buckets: dict[str, list[str]] = Field(default_factory=dict, description="Grouped snippets selected for the retrieval debug view.")
+    queries_by_bucket: dict[str, list[str]] = Field(default_factory=dict, description="Bucket-specific queries used during retrieval.")
+    references_by_bucket: dict[str, list[dict]] = Field(default_factory=dict, description="Bucket-specific references returned by retrieval.")
+    bucket_sources: dict[str, str] = Field(default_factory=dict, description="Source used for each bucket retrieval pass.")
 
 
 class AuditSummary(BaseModel):
@@ -144,9 +284,103 @@ class MvpAssessment(BaseModel):
     incident_id: str | None = Field(default=None, description="Incident identifier returned by the dispatch layer when applicable.")
     status: str = Field(..., description="Current incident status.")
     responder_mode: str = Field(..., description="Who is currently responding: patient, bystander, or no_response.")
+    interaction: InteractionSummary | None = Field(
+        default=None,
+        description="Interaction-controller metadata for the current turn.",
+    )
     detection: DetectionSummary
     clinical_assessment: ClinicalAssessmentSummary
     action: ActionSummary
+    response_plan: ResponsePlanSummary = Field(default_factory=ResponsePlanSummary)
     guidance: GuidanceSummary
     grounding: GroundingSummary = Field(default_factory=GroundingSummary)
     audit: AuditSummary = Field(default_factory=AuditSummary)
+
+
+class CommunicationTurnRequest(BaseModel):
+    session_id: str | None = Field(
+        default=None,
+        description="Optional server-side session identifier for the ongoing communication loop.",
+    )
+    event: FallEvent
+    vitals: VitalSigns | None = None
+    interaction: InteractionInput = Field(default_factory=InteractionInput)
+    latest_responder_message: str = Field(
+        default="",
+        description="Latest free-form responder message for this turn.",
+    )
+    conversation_history: list[ConversationMessage] = Field(
+        default_factory=list,
+        description="Short transcript history for the communication session.",
+    )
+    previous_assessment: MvpAssessment | None = Field(
+        default=None,
+        description="Most recent reasoning snapshot so guidance can continue without refreshing reasoning every turn.",
+    )
+
+
+class CommunicationAgentAnalysis(BaseModel):
+    followup_text: str = Field(..., description="Short human-facing next message from the communication AI.")
+    responder_role: str = Field(..., description="Best guess for who is speaking: patient, bystander, unknown, or no_response.")
+    communication_target: str = Field(..., description="Who the next message should address: patient, bystander, unknown, or no_response.")
+    patient_responded: bool = Field(default=False, description="Whether the patient appears to have responded in this turn.")
+    bystander_present: bool = Field(default=False, description="Whether a bystander appears to be present.")
+    bystander_can_help: bool = Field(default=False, description="Whether the bystander appears able or willing to help.")
+    extracted_facts: list[str] = Field(default_factory=list, description="Structured facts extracted from the latest responder message.")
+    reasoning_needed: bool = Field(default=False, description="Whether the communication AI believes a reasoning refresh is needed.")
+    reasoning_reason: str = Field(default="", description="Short explanation for why reasoning is or is not needed.")
+    guidance_intent: str = Field(default="question", description="Conversational intent such as question, instruction, clarify, or reassure.")
+    next_focus: str = Field(default="general_check", description="What the communication AI wants to learn or accomplish next.")
+    immediate_step: str | None = Field(default=None, description="Optional single immediate step for the responder.")
+    quick_replies: list[str] = Field(default_factory=list, description="Short suggested reply options.")
+
+
+class CommunicationTurnResponse(BaseModel):
+    session_id: str = Field(..., description="Server-side session identifier for the communication loop.")
+    interaction: InteractionSummary
+    communication_analysis: CommunicationAgentAnalysis
+    reasoning_invoked: bool = Field(..., description="Whether the reasoning engine was invoked for this turn.")
+    reasoning_status: str = Field(..., description="Current reasoning status such as idle, pending, completed, or failed.")
+    reasoning_reason: str = Field(default="", description="Short explanation for the current reasoning state.")
+    reasoning_error: str | None = Field(default=None, description="Most recent background reasoning error, if any.")
+    assistant_message: str = Field(..., description="Primary assistant message for the next conversational turn.")
+    assistant_question: str | None = Field(default=None, description="Optional next question when more information is needed.")
+    guidance_steps: list[str] = Field(default_factory=list, description="Step-by-step instructions for the current responder.")
+    quick_replies: list[str] = Field(default_factory=list, description="Short suggested replies for the current turn.")
+    assessment: MvpAssessment | None = Field(default=None, description="Updated reasoning snapshot when reasoning was invoked.")
+    execution_updates: list[ExecutionUpdate] = Field(
+        default_factory=list,
+        description="Operational updates such as family notification or dispatch execution state.",
+    )
+    transcript_append: list[ConversationMessage] = Field(
+        default_factory=list,
+        description="Messages that should be appended to the session transcript.",
+    )
+
+
+class CommunicationSessionStateResponse(BaseModel):
+    session_id: str = Field(..., description="Server-side session identifier for the communication loop.")
+    version: int = Field(default=0, description="Monotonic session-state version for streaming updates.")
+    reasoning_status: str = Field(..., description="Current reasoning status such as idle, pending, completed, or failed.")
+    reasoning_reason: str = Field(default="", description="Short explanation for the current reasoning state.")
+    reasoning_error: str | None = Field(default=None, description="Most recent background reasoning error, if any.")
+    interaction: InteractionSummary | None = Field(
+        default=None,
+        description="Latest interaction summary known for the session.",
+    )
+    latest_analysis: CommunicationAgentAnalysis | None = Field(
+        default=None,
+        description="Latest structured communication-agent analysis for the session.",
+    )
+    assessment: MvpAssessment | None = Field(
+        default=None,
+        description="Latest reasoning snapshot available for the session.",
+    )
+    execution_updates: list[ExecutionUpdate] = Field(
+        default_factory=list,
+        description="Operational updates such as family notification or dispatch execution state.",
+    )
+    conversation_history: list[ConversationMessage] = Field(
+        default_factory=list,
+        description="Full transcript accumulated on the backend for the session.",
+    )
