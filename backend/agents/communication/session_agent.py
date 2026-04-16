@@ -8,7 +8,7 @@ import logging
 from google.genai import errors, types
 
 from agents.shared.config import FALLBACK_MODELS
-from agents.shared.schemas import CommunicationAgentAnalysis, MvpAssessment
+from agents.shared.schemas import CommunicationAgentAnalysis, FallAssessment
 
 from .prompts import build_communication_analysis_prompt, build_communication_render_prompt
 
@@ -59,7 +59,7 @@ def _summarize_transcript(conversation_history) -> str:
     return "\n".join(f"- {message.role}: {message.text}" for message in conversation_history[-6:])
 
 
-def _summarize_assessment(assessment: MvpAssessment | None) -> str:
+def _summarize_assessment(assessment: FallAssessment | None) -> str:
     if assessment is None:
         return "No prior reasoning snapshot."
     return (
@@ -103,7 +103,7 @@ def _extract_facts(message_text: str, role: str) -> list[str]:
 def _heuristic_analysis(
     *,
     latest_message: str,
-    previous_assessment: MvpAssessment | None,
+    previous_assessment: FallAssessment | None,
 ) -> CommunicationAgentAnalysis:
     if not latest_message.strip():
         return CommunicationAgentAnalysis(
@@ -174,7 +174,7 @@ def _heuristic_analysis(
 def _fallback_rendered_followup(
     *,
     analysis: CommunicationAgentAnalysis,
-    assessment: MvpAssessment,
+    assessment: FallAssessment,
 ) -> tuple[str, str | None]:
     action = assessment.action.recommended
     first_step = assessment.guidance.steps[0] if assessment.guidance.steps else analysis.immediate_step
@@ -221,7 +221,7 @@ def _safe_pending_dispatch_followup(target: str) -> tuple[str, str | None]:
 def _apply_assessment_language_guardrails(
     *,
     analysis: CommunicationAgentAnalysis,
-    assessment: MvpAssessment | None,
+    assessment: FallAssessment | None,
 ) -> CommunicationAgentAnalysis:
     if assessment is None:
         return analysis
@@ -294,7 +294,7 @@ async def analyze_communication_turn(
     patient_profile,
     conversation_history,
     latest_message: str,
-    previous_assessment: MvpAssessment | None,
+    previous_assessment: FallAssessment | None,
 ) -> CommunicationAgentAnalysis:
     if client is None:
         return _heuristic_analysis(
@@ -337,7 +337,7 @@ async def render_communication_turn(
     vitals,
     conversation_history,
     analysis: CommunicationAgentAnalysis,
-    assessment: MvpAssessment | None,
+    assessment: FallAssessment | None,
 ) -> CommunicationAgentAnalysis:
     if client is None:
         if assessment is None:

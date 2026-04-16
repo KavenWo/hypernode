@@ -280,7 +280,7 @@ class AuditSummary(BaseModel):
     dispatch_triggered: bool = Field(default=False, description="Whether emergency dispatch started.")
 
 
-class MvpAssessment(BaseModel):
+class FallAssessment(BaseModel):
     incident_id: str | None = Field(default=None, description="Incident identifier returned by the dispatch layer when applicable.")
     status: str = Field(..., description="Current incident status.")
     responder_mode: str = Field(..., description="Who is currently responding: patient, bystander, or no_response.")
@@ -295,6 +295,8 @@ class MvpAssessment(BaseModel):
     guidance: GuidanceSummary
     grounding: GroundingSummary = Field(default_factory=GroundingSummary)
     audit: AuditSummary = Field(default_factory=AuditSummary)
+
+
 
 
 class CommunicationTurnRequest(BaseModel):
@@ -313,7 +315,7 @@ class CommunicationTurnRequest(BaseModel):
         default_factory=list,
         description="Short transcript history for the communication session.",
     )
-    previous_assessment: MvpAssessment | None = Field(
+    previous_assessment: FallAssessment | None = Field(
         default=None,
         description="Most recent reasoning snapshot so guidance can continue without refreshing reasoning every turn.",
     )
@@ -347,7 +349,7 @@ class CommunicationTurnResponse(BaseModel):
     assistant_question: str | None = Field(default=None, description="Optional next question when more information is needed.")
     guidance_steps: list[str] = Field(default_factory=list, description="Step-by-step instructions for the current responder.")
     quick_replies: list[str] = Field(default_factory=list, description="Short suggested replies for the current turn.")
-    assessment: MvpAssessment | None = Field(default=None, description="Updated reasoning snapshot when reasoning was invoked.")
+    assessment: FallAssessment | None = Field(default=None, description="Updated reasoning snapshot when reasoning was invoked.")
     execution_updates: list[ExecutionUpdate] = Field(
         default_factory=list,
         description="Operational updates such as family notification or dispatch execution state.",
@@ -372,7 +374,7 @@ class CommunicationSessionStateResponse(BaseModel):
         default=None,
         description="Latest structured communication-agent analysis for the session.",
     )
-    assessment: MvpAssessment | None = Field(
+    assessment: FallAssessment | None = Field(
         default=None,
         description="Latest reasoning snapshot available for the session.",
     )

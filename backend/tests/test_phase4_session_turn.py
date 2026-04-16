@@ -1,11 +1,8 @@
 """Targeted checks for the Phase 4 communication-agent turn loop."""
 
 import asyncio
-from pathlib import Path
-import sys
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(str(BACKEND_DIR))
+import pytest
 
 from agents.shared.schemas import (  # noqa: E402
     ActionSummary,
@@ -14,20 +11,23 @@ from agents.shared.schemas import (  # noqa: E402
     CommunicationAgentAnalysis,
     CommunicationTurnRequest,
     DetectionSummary,
+    FallAssessment,
     GroundingSummary,
     GuidanceSummary,
     InteractionInput,
     InteractionSummary,
-    MvpAssessment,
     ReasoningRefreshSummary,
     ResponsePlanSummary,
 )
 from agents.communication.session_agent import _apply_assessment_language_guardrails  # noqa: E402
-from app.services.mvp_flow import get_mvp_conversation_session_state, run_mvp_conversation_turn  # noqa: E402
+from app.fall.conversation_service import (  # noqa: E402
+    get_fall_conversation_session_state,
+    run_fall_conversation_turn,
+)
 
 
-def _previous_assessment() -> MvpAssessment:
-    return MvpAssessment(
+def _previous_assessment() -> FallAssessment:
+    return FallAssessment(
         incident_id=None,
         status="guidance_active",
         responder_mode="bystander",
@@ -76,7 +76,7 @@ def _previous_assessment() -> MvpAssessment:
     )
 
 
-def _pending_dispatch_assessment() -> MvpAssessment:
+def _pending_dispatch_assessment() -> FallAssessment:
     assessment = _previous_assessment()
     return assessment.model_copy(
         update={
@@ -92,7 +92,8 @@ def _pending_dispatch_assessment() -> MvpAssessment:
     )
 
 
-async def _run() -> None:
+@pytest.mark.asyncio
+async def test_phase4_session_turn_loop() -> None:
     start_request = CommunicationTurnRequest(
         session_id=None,
         event={
@@ -110,7 +111,7 @@ async def _run() -> None:
         latest_responder_message="",
         previous_assessment=None,
     )
-    start_response = await run_mvp_conversation_turn(start_request)
+    start_response = await run_fall_conversation_turn(start_request)
     assert start_response.session_id, start_response
     assert start_response.reasoning_invoked is True, start_response
     assert start_response.reasoning_status == "pending", start_response
@@ -120,7 +121,7 @@ async def _run() -> None:
     session_state = None
     for _ in range(40):
         await asyncio.sleep(0.1)
-        session_state = get_mvp_conversation_session_state(start_response.session_id)
+        session_state = get_fall_conversation_session_state(start_response.session_id)
         if session_state and session_state.reasoning_status == "completed":
             break
     assert session_state is not None, start_response
@@ -145,7 +146,7 @@ async def _run() -> None:
         latest_responder_message="okay",
         previous_assessment=None,
     )
-    continue_response = await run_mvp_conversation_turn(continue_request)
+    continue_response = await run_fall_conversation_turn(continue_request)
     assert continue_response.reasoning_invoked is False, continue_response
     assert continue_response.guidance_steps, continue_response
     assert len(continue_response.guidance_steps) == 1, continue_response
@@ -168,7 +169,7 @@ async def _run() -> None:
         latest_responder_message="He is breathing strangely now.",
         previous_assessment=None,
     )
-    refresh_response = await run_mvp_conversation_turn(refresh_request)
+    refresh_response = await run_fall_conversation_turn(refresh_request)
     assert refresh_response.reasoning_invoked is True, refresh_response
     assert refresh_response.reasoning_status == "pending", refresh_response
     assert len(refresh_response.guidance_steps) <= 1, refresh_response
@@ -193,24 +194,24 @@ async def _run() -> None:
         latest_responder_message="I am okay, breathing okay, just sore with mild pain.",
         previous_assessment=None,
     )
-    reassure_response = await run_mvp_conversation_turn(reassure_request)
+    reassure_response = await run_fall_conversation_turn(reassure_request)
     assert reassure_response.reasoning_invoked is True, reassure_response
     assert reassure_response.reasoning_status == "pending", reassure_response
     assistant_count_after_turn = sum(
-        1 for message in get_mvp_conversation_session_state(start_response.session_id).conversation_history if message.role == "assistant"
+        1 for message in get_fall_conversation_session_state(start_response.session_id).conversation_history if message.role == "assistant"
     )
 
     refreshed_state = None
     for _ in range(40):
         await asyncio.sleep(0.1)
-        refreshed_state = get_mvp_conversation_session_state(start_response.session_id)
+        refreshed_state = get_fall_conversation_session_state(start_response.session_id)
         if refreshed_state and refreshed_state.reasoning_status == "completed":
             break
     assert refreshed_state is not None, reassure_response
     assistant_messages = [message for message in refreshed_state.conversation_history if message.role == "assistant"]
     assert len(assistant_messages) == assistant_count_after_turn, refreshed_state
     if refreshed_state.execution_updates:
-        family_turn = await run_mvp_conversation_turn(
+        family_turn = await run_fall_conversation_turn(
             CommunicationTurnRequest(
                 session_id=start_response.session_id,
                 event={
@@ -254,13 +255,3 @@ async def _run() -> None:
     assert "help is on the way" not in guarded.followup_text.lower(), guarded
     assert "may need" in guarded.followup_text.lower() or "being prepared" in guarded.followup_text.lower(), guarded
     assert session_state.execution_updates == [] or isinstance(session_state.execution_updates, list), session_state
-
-    print("Phase 4 session turn loop verified.")
-
-
-def main() -> None:
-    asyncio.run(_run())
-
-
-if __name__ == "__main__":
-    main()

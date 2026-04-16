@@ -1,4 +1,4 @@
-"""In-memory MVP session store for the Phase 4 communication loop."""
+"""In-memory fall session store for the Phase 4 communication loop."""
 
 from __future__ import annotations
 
@@ -10,23 +10,23 @@ from agents.shared.schemas import (
     CommunicationAgentAnalysis,
     ConversationMessage,
     ExecutionUpdate,
+    FallAssessment,
     FallEvent,
     InteractionInput,
     InteractionSummary,
-    MvpAssessment,
     VitalSigns,
 )
 
 
 @dataclass
-class MvpSessionRecord:
+class FallSessionRecord:
     session_id: str
     event: FallEvent
     vitals: VitalSigns | None = None
     interaction_input: InteractionInput = field(default_factory=InteractionInput)
     interaction_summary: InteractionSummary | None = None
     latest_analysis: CommunicationAgentAnalysis | None = None
-    latest_assessment: MvpAssessment | None = None
+    latest_assessment: FallAssessment | None = None
     conversation_history: list[ConversationMessage] = field(default_factory=list)
     reasoning_status: str = "idle"
     reasoning_reason: str = ""
@@ -37,10 +37,10 @@ class MvpSessionRecord:
     announced_execution_types: set[str] = field(default_factory=set)
 
 
-class MvpSessionStore:
+class FallSessionStore:
     def __init__(self) -> None:
         self._lock = Lock()
-        self._sessions: dict[str, MvpSessionRecord] = {}
+        self._sessions: dict[str, FallSessionRecord] = {}
 
     def create_session(
         self,
@@ -48,9 +48,9 @@ class MvpSessionStore:
         event: FallEvent,
         vitals: VitalSigns | None,
         interaction_input: InteractionInput,
-    ) -> MvpSessionRecord:
+    ) -> FallSessionRecord:
         session_id = f"phase4-{uuid4().hex[:12]}"
-        record = MvpSessionRecord(
+        record = FallSessionRecord(
             session_id=session_id,
             event=event.model_copy(deep=True),
             vitals=vitals.model_copy(deep=True) if vitals else None,
@@ -61,7 +61,7 @@ class MvpSessionStore:
             self._sessions[session_id] = record
         return self.get_session(session_id)
 
-    def get_session(self, session_id: str) -> MvpSessionRecord | None:
+    def get_session(self, session_id: str) -> FallSessionRecord | None:
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -75,7 +75,7 @@ class MvpSessionStore:
         event: FallEvent,
         vitals: VitalSigns | None,
         interaction_input: InteractionInput,
-    ) -> MvpSessionRecord | None:
+    ) -> FallSessionRecord | None:
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -86,7 +86,7 @@ class MvpSessionStore:
             self._touch_locked(record)
             return self._copy_record(record)
 
-    def append_messages(self, session_id: str, messages: list[ConversationMessage]) -> MvpSessionRecord | None:
+    def append_messages(self, session_id: str, messages: list[ConversationMessage]) -> FallSessionRecord | None:
         clean_messages = [message.model_copy(deep=True) for message in messages if message.text.strip()]
         if not clean_messages:
             return self.get_session(session_id)
@@ -104,7 +104,7 @@ class MvpSessionStore:
         session_id: str,
         interaction_summary: InteractionSummary,
         latest_analysis: CommunicationAgentAnalysis,
-    ) -> MvpSessionRecord | None:
+    ) -> FallSessionRecord | None:
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -135,7 +135,7 @@ class MvpSessionStore:
         self,
         *,
         session_id: str,
-        assessment: MvpAssessment,
+        assessment: FallAssessment,
         assistant_message: ConversationMessage | None = None,
         execution_updates: list[ExecutionUpdate] | None = None,
     ) -> bool:
@@ -168,7 +168,7 @@ class MvpSessionStore:
             self._touch_locked(record)
             return False
 
-    def mark_execution_announced(self, *, session_id: str, execution_type: str) -> MvpSessionRecord | None:
+    def mark_execution_announced(self, *, session_id: str, execution_type: str) -> FallSessionRecord | None:
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -197,12 +197,12 @@ class MvpSessionStore:
             return False
 
     @staticmethod
-    def _touch_locked(record: MvpSessionRecord) -> None:
+    def _touch_locked(record: FallSessionRecord) -> None:
         record.version += 1
 
     @staticmethod
-    def _copy_record(record: MvpSessionRecord) -> MvpSessionRecord:
-        return MvpSessionRecord(
+    def _copy_record(record: FallSessionRecord) -> FallSessionRecord:
+        return FallSessionRecord(
             session_id=record.session_id,
             event=record.event.model_copy(deep=True),
             vitals=record.vitals.model_copy(deep=True) if record.vitals else None,
@@ -221,4 +221,7 @@ class MvpSessionStore:
         )
 
 
-mvp_session_store = MvpSessionStore()
+fall_session_store = FallSessionStore()
+
+
+__all__ = ["FallSessionRecord", "FallSessionStore", "fall_session_store"]

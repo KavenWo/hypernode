@@ -1,13 +1,20 @@
 # Backend Structure
 
-This backend now has a clearer split between:
+This backend currently has four active layers:
 
-- active application code under `app/`
-- reusable agent logic under `agents/`
-- persistence/fallback data under `db/` and `data/`
-- preserved older prototypes under `legacy/`
+- `app/`: FastAPI entrypoint, routes, runtime bootstrap, active services, and fall-domain wrappers
+- `agents/`: reusable retrieval, reasoning, communication, and question logic
+- `db/` and `data/`: persistence access plus local fallback policy and guidance assets
+- `legacy/`: preserved older prototypes that are not part of the active product path
 
-The goal is to make the MVP path obvious without deleting older teammate files.
+The practical source of truth today is:
+
+- `app/api/routes/fall.py`
+- `app/fall/*`
+- `agents/*`
+
+That source of truth works, but it is currently overloaded. The next cleanup
+direction is documented in [../BackendConsolidationPlan.md](../BackendConsolidationPlan.md).
 
 ## Run locally
 
@@ -17,14 +24,20 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-## Run tests
+## Run backend checks
 
 ```powershell
 cd backend
-uv run tests/test_phase1.py
-uv run tests/test_agent.py
-uv run tests/test_mvp_flow.py
+uv run tests/test_phase3_reasoning.py
+uv run tests/test_phase2_retrieval_policy.py
+uv run tests/test_phase2_retrieval_engine.py
+uv run tests/test_phase2_guidance_normalizer.py
 ```
+
+Some files under `tests/` are still manual verification scripts rather than a
+true automated pytest suite. The manual runners now live under `evals/manual/`,
+and the remaining cleanup is to install the new pytest dependencies and run the
+suite through pytest directly.
 
 ## Utility scripts
 
@@ -57,35 +70,51 @@ If those are not configured yet, the backend falls back to `data/medical_guidanc
 
 You can verify the live app connection with:
 
-`.\.venv\Scripts\python.exe tests/test_vertex_search.py "fall first aid guidance"`
+`.\.venv\Scripts\python.exe evals/manual/vertex_search_inspector.py "fall first aid guidance"`
 
-## MVP Flow
+## Active Product Flow
 
-The backend now supports the MVP loop as a centralized two-step flow:
+The backend currently supports two fall-flow entry styles:
 
-1. `POST /api/v1/events/fall/questions`
-2. `POST /api/v1/events/fall/assess`
+### 1. Session-based conversation flow
 
-The first endpoint returns 2-3 questions. The second endpoint runs reasoning
-once, returns the MVP result, and automatically starts the mock dispatch layer
-when the assessed action is `emergency_dispatch`.
+This is the current Phase 4 product-facing path and the flow used by
+`frontend/health-guard-ai/src/components/MvpTestPage.jsx`.
 
-The assessment response includes:
+- `POST /api/v1/events/fall/session-turn`
+- `GET /api/v1/events/fall/session-state/{session_id}`
+- `GET /api/v1/events/fall/session-events/{session_id}`
 
-- `severity`
-- `action`
-- `instructions`
-- `reasoning`
-- `dispatch_triggered`
-- `incident_id`
+This flow is intended to remain the long-term product direction because it can
+support:
+
+- patient-first interaction
+- bystander takeover
+- selective reasoning refresh
+- execution updates
+- transport-neutral progression toward future live mode
+
+### 2. Deterministic assessment flow
+
+These endpoints still exist and are useful for evaluation, debugging, and
+deterministic backend checks:
+
+- `POST /api/v1/events/fall/questions`
+- `POST /api/v1/events/fall/assess`
+
+The question endpoint returns 2-3 targeted questions.
+The assessment endpoint runs retrieval and reasoning once, returns the current
+assessment contract, and starts the mock dispatch layer when the assessed action
+is `emergency_dispatch`.
 
 ## Root Layout
 
-- `app/`: FastAPI application entrypoint, routes, services, and runtime bootstrap.
+- `app/`: FastAPI application entrypoint, routes, fall-domain services, and runtime bootstrap.
 - `agents/`: Shared agent logic used by the MVP pipeline.
 - `db/`: Firestore access and patient profile loading.
 - `data/`: Local fallback patient and guidance data.
-- `tests/`: Local verification scripts for MVP flow, agents, and Vertex search.
+- `tests/`: Automated regression-oriented checks.
+- `evals/`: Manual runners and local inspection scripts that are not part of pytest collection.
 - `scripts/`: Utility scripts such as seeding sample data.
 - `legacy/`: Preserved older prototypes that are not part of the main MVP path.
 - `.env`: Local environment configuration for development.
@@ -97,36 +126,41 @@ The assessment response includes:
 
 - `app/main.py`: FastAPI entrypoint that mounts the active routers.
 - `app/core/bootstrap.py`: Shared runtime bootstrap for `.env` loading and logging.
-- `app/api/routes/mvp.py`: Main frontend-facing MVP endpoints.
+- `app/api/routes/fall.py`: Main frontend-facing fall-flow endpoints.
+- `app/fall/`: Fall-domain service boundary introduced to absorb the active product flow cleanly.
 - `app/api/routes/emergency.py`: Mock emergency dispatch router and in-memory incident tracker.
-- `app/services/mvp_flow.py`: Centralized MVP flow for questions, single-pass reasoning, and optional dispatch.
+- `app/fall/execution_service.py`: Domain-owned emergency execution and incident-tracking logic.
 - `agents/shared/`: Shared config and schemas used across the backend.
 - `agents/sentinel/`: Event and vitals inspection logic.
-- `agents/triage/`: Question generation for the 2-3 question MVP intake step.
-- `agents/reasoning/`: Clinical reasoning agent and prompt builder.
+- `agents/triage/`: Question generation for deterministic fall intake and evaluation flows.
+- `agents/reasoning/`: Clinical reasoning agent and Phase 3 staged reasoning helpers.
+- `agents/communication/`: Phase 4 interaction policy and communication analysis/render helpers.
 - `agents/bystander/`: Grounded guidance retrieval and bystander instruction helpers.
 - `agents/coordinator/`: Older dispatch decision logic kept for experiments.
 - `db/`: Firestore access and sample patient loading.
 - `data/`: Local fallback patient and medical guidance data.
 
-## Legacy And Compatibility
-
-- `legacy/triage_agent.py`: Preserved teammate triage prototype.
-- `legacy/vitals.py`: Preserved standalone vitals router prototype.
-- `agents/orchestrator.py`: Compatibility wrapper plus older direct-dispatch experiment.
-
 ## Tests And Scripts
 
-- `tests/test_api_mvp.py`: API-level verification for the exact frontend MVP sequence.
-- `tests/test_mvp_flow.py`: Direct shared-service verification for the MVP flow.
-- `tests/test_phase1.py`: Lightweight schema and mock-tool verification.
-- `tests/test_agent.py`: End-to-end local workflow runner for the Gemini-backed flow.
-- `tests/test_vertex_search.py`: Vertex AI Search inspection utility.
+- `tests/test_api_fall.py`: API-level verification across the current fall routes.
+- `tests/test_phase2_guidance_normalizer.py`: Unit checks for guidance shaping from retrieval buckets.
+- `tests/test_phase2_retrieval_engine.py`: Unit checks for bucketed retrieval output.
+- `tests/test_phase2_retrieval_policy.py`: Unit checks for retrieval intent and query planning.
+- `tests/test_phase3_reasoning.py`: Unit checks for the staged reasoning engine.
+- `tests/test_phase4_interaction.py`: Interaction-policy checks for target selection and refresh rules.
+- `tests/test_phase4_session_turn.py`: Session-loop checks for the conversation flow.
+- `evals/manual/deterministic_fall_flow_runner.py`: Manual runner for the deterministic fall evaluation flow using the active fall services.
+- `evals/manual/phase1_foundation_check.py`: Manual verification for foundation stubs and schemas.
+- `evals/manual/vertex_search_inspector.py`: Manual Vertex AI Search inspection utility.
 - `scripts/seed_firestore.py`: Helper for seeding the sample patient into Firestore.
 - `pyproject.toml`: Canonical dependency manifest for `uv`.
+- `pytest.ini`: Pytest collection and asyncio configuration for the automated suite.
 
 ## Architecture Notes
 
-- The current MVP path is: `app/api/routes/mvp.py` -> `app/services/mvp_flow.py` -> `agents/*`.
+- The current active fall path is: `app/api/routes/fall.py` -> `app/fall/*` -> `agents/*`.
+- The Phase 4 session flow is the best candidate for the long-term canonical product workflow.
+- The question/assessment flow should be preserved as a deterministic evaluation entrypoint.
 - `legacy/` is for preserved prototypes that we are not deleting, but that are not part of the main MVP path.
 - `Vertex AI Search` provides grounded snippets and references for medical guidance rather than whole attached documents.
+- The backend cleanup roadmap now lives in `../BackendConsolidationPlan.md`.

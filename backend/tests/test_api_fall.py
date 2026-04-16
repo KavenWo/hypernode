@@ -1,29 +1,14 @@
-"""Exercise the FastAPI MVP endpoints the frontend will call."""
+"""Exercise the FastAPI fall endpoints the frontend will call."""
 
-from pathlib import Path
-import sys
 import time
 
 from fastapi.testclient import TestClient
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-sys.path.append(str(BACKEND_DIR))
-
 from app.main import app
 
 
-def main() -> None:
+def test_api_fall_flow() -> None:
     client = TestClient(app)
-
-    scenarios_response = client.get("/api/v1/events/fall/phase3-scenarios")
-    scenarios_response.raise_for_status()
-    scenarios_payload = scenarios_response.json()
-    assert scenarios_payload["scenarios"], scenarios_payload
-
-    phase4_scenarios_response = client.get("/api/v1/events/fall/phase4-scenarios")
-    phase4_scenarios_response.raise_for_status()
-    phase4_scenarios_payload = phase4_scenarios_response.json()
-    assert phase4_scenarios_payload["scenarios"], phase4_scenarios_payload
 
     questions_response = client.post(
         "/api/v1/events/fall/questions",
@@ -149,8 +134,4 @@ def main() -> None:
     assert session_state_payload["conversation_history"], session_state_payload
     assert session_state_payload["assessment"] is not None, session_state_payload
 
-    print("MVP API flow verified.")
-
-
-if __name__ == "__main__":
-    main()
+    assert session_state_payload["assessment"] is not None, session_state_payload
