@@ -206,6 +206,7 @@ def _heuristic_analysis(
     previous_assessment: FallAssessment | None,
     previous_analysis: CommunicationAgentAnalysis | None = None,
     acknowledged_reasoning_triggers: set[str] | None = None,
+    ai_error: str | None = None,
 ) -> CommunicationAgentAnalysis:
     if not latest_message.strip():
         return CommunicationAgentAnalysis(
@@ -227,6 +228,7 @@ def _heuristic_analysis(
             next_focus="responsiveness",
             immediate_step=None,
             quick_replies=["Yes", "No", "Need help", "I can answer"],
+            ai_server_error=ai_error,
         )
 
     role, patient_responded, bystander_present = _heuristic_role(latest_message)
@@ -314,7 +316,9 @@ def _heuristic_analysis(
         guidance_intent="instruction" if immediate_step else "question",
         next_focus=next_focus,
         immediate_step=immediate_step,
-        quick_replies=quick_replies, ai_server_error=ai_error)
+        quick_replies=quick_replies,
+        ai_server_error=ai_error,
+    )
     return _finalize_analysis_memory(analysis=analysis, previous_analysis=previous_analysis)
 
 

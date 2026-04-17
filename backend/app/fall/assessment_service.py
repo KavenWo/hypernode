@@ -25,11 +25,9 @@ from agents.communication.interaction_policy import (
     choose_interaction_target,
     should_refresh_reasoning,
 )
-from agents.reasoning.clinical_reasoning_service import assess_clinical_severity
 from agents.reasoning.support_grounding import run_reasoning_support_grounding
-from agents.sentinel.vital_agent import inspect_vitals
-from agents.sentinel.vision_agent import inspect_fall_event
 from agents.shared.config import get_genai_client
+from app.fall.agent_runtime import get_fall_agent_runtime
 from app.fall.contracts import (
     ActionSummary,
     AuditSummary,
@@ -78,7 +76,7 @@ def _confidence_band(score: float) -> str:
 def get_runtime_status() -> dict:
     """Expose lightweight runtime state for the frontend MVP tester."""
     vertex_project = os.getenv("VERTEX_AI_SEARCH_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
-    vertex_engine = os.getenv("VERTEX_AI_SEARCH_ENGINE_ID")
+    vertex_engine = os.getenv("VERTEX_AI_SEARCH_ENGINE_ID") or os.getenv("ADK_VERTEX_SEARCH_ENGINE_ID")
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY")
 
     return {
@@ -324,9 +322,10 @@ async def _run_clinical_state_stage(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
 ) -> tuple[VisionAssessment, VitalAssessment | None, ClinicalAssessment]:
-    vision_assessment = await inspect_fall_event(event)
-    vital_assessment = await inspect_vitals(vitals)
-    clinical_assessment = await assess_clinical_severity(
+    runtime = get_fall_agent_runtime()
+    vision_assessment = await runtime.inspect_fall_event(event)
+    vital_assessment = await runtime.inspect_vitals(vitals)
+    clinical_assessment = await runtime.assess_clinical_severity(
         client=client,
         event=event,
         patient_profile=patient_profile,
@@ -767,7 +766,7 @@ async def run_reasoning_assessment(
             reasoning_support_result["source"],
             ", ".join(reasoning_support_result["selected_intents"][:3]) or "none",
         )
-        clinical_assessment = await assess_clinical_severity(
+        clinical_assessment = await get_fall_agent_runtime().assess_clinical_severity(
             client=client,
             event=event,
             patient_profile=patient_profile,
@@ -958,7 +957,7 @@ async def run_fall_assessment(
             reasoning_support_result["source"],
             ", ".join(reasoning_support_result["selected_intents"][:3]) or "none",
         )
-        clinical_assessment = await assess_clinical_severity(
+        clinical_assessment = await get_fall_agent_runtime().assess_clinical_severity(
             client=client,
             event=event,
             patient_profile=patient_profile,

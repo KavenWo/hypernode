@@ -20,6 +20,37 @@ except ImportError:  # pragma: no cover - optional during early local setup
 logger = logging.getLogger(__name__)
 
 
+def _resolve_vertex_search_engine_id() -> str:
+    engine_id = (os.getenv("VERTEX_AI_SEARCH_ENGINE_ID") or "").strip()
+    if engine_id:
+        return engine_id
+
+    adk_engine_resource = (os.getenv("ADK_VERTEX_SEARCH_ENGINE_ID") or "").strip()
+    if not adk_engine_resource:
+        return ""
+
+    marker = "/engines/"
+    if marker in adk_engine_resource:
+        return adk_engine_resource.split(marker, 1)[1]
+    return adk_engine_resource
+
+
+def _resolve_vertex_search_location() -> str:
+    configured_location = (os.getenv("VERTEX_AI_SEARCH_LOCATION") or "").strip()
+    if configured_location:
+        return configured_location
+
+    adk_engine_resource = (os.getenv("ADK_VERTEX_SEARCH_ENGINE_ID") or "").strip()
+    marker = "/locations/"
+    if marker in adk_engine_resource:
+        location_part = adk_engine_resource.split(marker, 1)[1]
+        if "/" in location_part:
+            return location_part.split("/", 1)[0]
+        return location_part
+
+    return "global"
+
+
 def _to_plain_value(value):
     """Best-effort conversion from protobuf wrapper values to plain Python values."""
     if isinstance(value, dict):
@@ -140,8 +171,8 @@ def _pick_reference_fields(document: object) -> dict:
 
 def _query_vertex_ai_search(query: str, max_results: int) -> dict:
     project_id = os.getenv("VERTEX_AI_SEARCH_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
-    location = os.getenv("VERTEX_AI_SEARCH_LOCATION", "global")
-    engine_id = os.getenv("VERTEX_AI_SEARCH_ENGINE_ID")
+    location = _resolve_vertex_search_location()
+    engine_id = _resolve_vertex_search_engine_id()
 
     if discoveryengine is None or not project_id or not engine_id:
         logger.warning(

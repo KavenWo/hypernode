@@ -10,8 +10,6 @@ from typing import Optional
 
 from fastapi import BackgroundTasks
 
-from agents.communication.session_agent import analyze_communication_turn
-from agents.execution.execution_agent import requires_execution_grounding, run_execution_grounding
 from agents.shared.config import get_genai_client
 from app.fall.action_runtime_service import (
     apply_session_action_decision,
@@ -19,6 +17,7 @@ from app.fall.action_runtime_service import (
     sync_action_state_with_assessment,
     sync_dispatch_confirmation_task,
 )
+from app.fall.agent_runtime import get_fall_agent_runtime
 from app.fall.assessment_service import build_interaction_summary, load_user_profile, run_fall_assessment, run_reasoning_assessment
 from app.fall.contracts import (
     CommunicationAgentAnalysis,
@@ -732,7 +731,8 @@ async def run_fall_conversation_turn(
         client = None
 
     patient_profile = load_user_profile(request.event.user_id)
-    analysis = await analyze_communication_turn(
+    runtime = get_fall_agent_runtime()
+    analysis = await runtime.analyze_communication_turn(
         client=client,
         event=request.event,
         vitals=request.vitals,
@@ -999,7 +999,8 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
 
         # ── Phase 2: Execution Agent (only if warranted) ──────────────
         bystander_actions = assessment.response_plan.bystander_actions if assessment.response_plan else []
-        if requires_execution_grounding(
+        runtime = get_fall_agent_runtime()
+        if runtime.requires_execution_grounding(
             action=assessment.action.recommended,
             bystander_actions=bystander_actions,
         ):
@@ -1009,7 +1010,7 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
                 assessment.action.recommended,
             )
             patient_profile = load_user_profile(session.event.user_id)
-            execution_plan = await run_execution_grounding(
+            execution_plan = await runtime.run_execution_grounding(
                 action=assessment.action.recommended,
                 clinical_assessment=assessment.clinical_assessment,
                 patient_profile=patient_profile,

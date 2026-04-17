@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -12,6 +13,7 @@ except ImportError:  # pragma: no cover - optional during early local setup
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 SAMPLE_PATIENT_PATH = BACKEND_DIR / "data" / "sample_patient.json"
+logger = logging.getLogger(__name__)
 
 
 def _load_sample_profiles_payload() -> tuple[PatientProfile, list[PatientProfile]]:
@@ -41,9 +43,16 @@ def get_firestore_client():
 def load_patient_profile(user_id: str) -> PatientProfile:
     client = get_firestore_client()
     if client is not None:
-        document = client.collection("patients").document(user_id).get()
-        if document.exists:
-            return PatientProfile.model_validate(document.to_dict())
+        try:
+            document = client.collection("patients").document(user_id).get()
+            if document.exists:
+                return PatientProfile.model_validate(document.to_dict())
+        except Exception as exc:
+            logger.warning(
+                "Firestore profile lookup failed for user %s; falling back to local sample profiles. Error: %s",
+                user_id,
+                exc,
+            )
 
     default_profile, profiles = _load_sample_profiles_payload()
 
@@ -64,5 +73,11 @@ def seed_sample_patient() -> PatientProfile:
     profile, _ = _load_sample_profiles_payload()
     client = get_firestore_client()
     if client is not None:
-        client.collection("patients").document(profile.user_id).set(profile.model_dump())
+        try:
+            client.collection("patients").document(profile.user_id).set(profile.model_dump())
+        except Exception as exc:
+            logger.warning(
+                "Firestore seed failed; local sample profile remains available. Error: %s",
+                exc,
+            )
     return profile
