@@ -131,6 +131,19 @@
         ]
       }
     },
+    "waiting_for_help": {
+      "bucket_queries": {
+        "monitoring_and_followup": [
+          "waiting for emergency help after collapse bystander what to do"
+        ],
+        "scene_safety": [
+          "stay with patient while waiting for ambulance first aid"
+        ],
+        "bystander_instructions": [
+          "what should bystander do while waiting for emergency responders"
+        ]
+      }
+    },
     "bystander_instruction_mode": {
       "bucket_queries": {
         "bystander_instructions": [

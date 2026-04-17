@@ -12,6 +12,8 @@ inputs, internal analysis artifacts, or final product-facing responses.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -92,7 +94,6 @@ class InteractionInput(BaseModel):
 class ReasoningRefreshSummary(BaseModel):
     required: bool = Field(..., description="Whether a new reasoning pass should run for the current turn.")
     reason: str = Field(..., description="Short explanation for the refresh decision.")
-    priority: str = Field(..., description="Priority band for the refresh trigger.")
 
 
 #
@@ -132,12 +133,130 @@ class PatientAnswer(BaseModel):
 class ConversationMessage(BaseModel):
     role: str = Field(..., description="conversation role such as system, assistant, patient, or bystander.")
     text: str = Field(..., description="Message content for the session transcript.")
+    session_version: int | None = Field(default=None, description="Session-state version when this message was recorded.")
+    reasoning_input_version: int | None = Field(
+        default=None,
+        description="Reasoning input version this message belongs to for debugging against reasoning runs.",
+    )
+    comm_reasoning_required: bool | None = Field(
+        default=None,
+        description="Whether the communication agent believed this turn should trigger a reasoning rerun.",
+    )
+    comm_reasoning_reason: str | None = Field(
+        default=None,
+        description="Short explanation for the communication agent's rerun decision on this turn.",
+    )
 
 
 class ExecutionUpdate(BaseModel):
     type: str = Field(..., description="Execution action key such as inform_family or emergency_dispatch.")
     status: str = Field(..., description="Execution status such as planned, queued, completed, or skipped.")
     detail: str = Field(..., description="Short human-readable explanation of what happened.")
+    message_text: str = Field(
+        default="",
+        description="Rendered outbound message content that the execution layer sent or prepared to send.",
+    )
+    script_lines: list[str] = Field(
+        default_factory=list,
+        description="Optional structured script or notification lines prepared for the execution action.",
+    )
+    notification_key: str | None = Field(
+        default=None,
+        description="Stable identifier for a distinct notification payload so repeated sends can be tracked.",
+    )
+    occurrence_count: int = Field(
+        default=1,
+        description="How many times this execution action has been sent or refreshed for the current incident.",
+    )
+    sent_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when the latest execution message was sent or finalized.",
+    )
+    incident_id: str | None = Field(
+        default=None,
+        description="Incident identifier associated with the execution action when applicable.",
+    )
+
+
+class ActionStateSummary(BaseModel):
+    action_type: str = Field(..., description="Main action track such as monitor, contact_family, or emergency_dispatch.")
+    desired: bool = Field(default=False, description="Whether the latest reasoning snapshot says this action should currently be active.")
+    status: str = Field(
+        default="idle",
+        description="Lifecycle status such as idle, active, pending_confirmation, completed, cancelled, or suppressed.",
+    )
+    reason: str = Field(default="", description="Short explanation for why this action track is active or inactive.")
+    detail: str = Field(default="", description="Human-readable execution detail for the current action state.")
+    message_text: str = Field(
+        default="",
+        description="Rendered outbound message content associated with this action track.",
+    )
+    requires_confirmation: bool = Field(
+        default=False,
+        description="Whether this action currently needs a short confirmation window before execution.",
+    )
+    confirmation_status: str = Field(
+        default="not_needed",
+        description="Confirmation state such as not_needed, pending, confirmed, timed_out, cancelled, or suppressed.",
+    )
+    countdown_seconds: int | None = Field(
+        default=None,
+        description="Optional countdown associated with confirmation or pending execution.",
+    )
+    confirmation_deadline: datetime | None = Field(
+        default=None,
+        description="Absolute time when the current confirmation window expires.",
+    )
+    incident_id: str | None = Field(
+        default=None,
+        description="Incident identifier created by dispatch execution when applicable.",
+    )
+    script_lines: list[str] = Field(
+        default_factory=list,
+        description="Prepared execution script, operator handoff, or outbound notification content for this action track.",
+    )
+    notification_key: str | None = Field(
+        default=None,
+        description="Stable identifier for the latest distinct notification payload for this action track.",
+    )
+    occurrence_count: int = Field(
+        default=0,
+        description="How many times this action has produced a distinct outbound notification in the current session.",
+    )
+    last_updated_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when this action track was last materially updated.",
+    )
+
+
+class SessionActionRequest(BaseModel):
+    action_type: str = Field(..., description="Action track to control, such as emergency_dispatch.")
+    decision: str = Field(..., description="Requested control action such as confirm or cancel.")
+
+
+class SessionActionResponse(BaseModel):
+    session_id: str = Field(..., description="Server-side session identifier.")
+    action_state: ActionStateSummary = Field(..., description="Updated state for the controlled action track.")
+    execution_updates: list[ExecutionUpdate] = Field(
+        default_factory=list,
+        description="Latest execution updates after applying the requested action control.",
+    )
+
+
+class ExecutionPlan(BaseModel):
+    """Structured step-by-step guidance produced by the execution agent.
+
+    The execution agent owns all guidance/protocol Vertex AI Search queries
+    and assembles them into a deliverable plan. The communication agent
+    consumes this plan one step at a time on each user turn.
+    """
+
+    steps: list[str] = Field(default_factory=list, description="Ordered step-by-step actions for the patient or bystander.")
+    warnings: list[str] = Field(default_factory=list, description="Safety warnings specific to the execution steps.")
+    escalation_triggers: list[str] = Field(default_factory=list, description="Conditions under which the responder should escalate.")
+    quick_replies: list[str] = Field(default_factory=list, description="Suggested short replies for the responder during execution.")
+    protocol_key: str = Field(default="", description="Stable protocol identifier such as cpr or bleeding_control.")
+    source: str = Field(default="not_requested", description="Retrieval source used to build the plan.")
 
 
 #
@@ -197,6 +316,7 @@ class ClinicalAssessment(BaseModel):
     recommended_action: str = Field(..., description="Recommended next action from the fixed action vocabulary.")
     response_plan: "ResponsePlanSummary" = Field(default_factory=lambda: ResponsePlanSummary(), description="Structured multi-track operational response plan.")
     reasoning_trace: "ReasoningTraceSummary" = Field(default_factory=lambda: ReasoningTraceSummary(), description="Compact Phase 3 reasoning trace for debugging and MVP inspection.")
+    ai_server_error: str | None = Field(default=None, description="Specific error string from the AI server if a fallback was triggered.")
 
 
 class FallQuestionsRequest(BaseModel):
@@ -296,6 +416,7 @@ class ClinicalAssessmentSummary(BaseModel):
     reasoning_summary: str = Field(..., description="Short explanation of the clinical reasoning result.")
     response_plan: ResponsePlanSummary = Field(default_factory=ResponsePlanSummary, description="Structured multi-track operational response plan.")
     reasoning_trace: ReasoningTraceSummary = Field(default_factory=ReasoningTraceSummary, description="Compact Phase 3 reasoning trace for debugging and MVP inspection.")
+    ai_server_error: str | None = Field(default=None, description="Specific error string from the AI server if a fallback was triggered.")
 
 
 class ActionSummary(BaseModel):
@@ -312,42 +433,71 @@ class GuidanceSummary(BaseModel):
     escalation_triggers: list[str] = Field(default_factory=list, description="Grounded escalation cues that explain when urgent help is needed.")
 
 
+class ProtocolGuidanceSummary(BaseModel):
+    protocol_key: str = Field(default="", description="Stable protocol identifier such as cpr or bleeding_control.")
+    title: str = Field(default="", description="Human-readable name for the active protocol.")
+    grounding_required: bool = Field(default=False, description="Whether this protocol requires successful grounding before communication can guide it.")
+    grounding_status: str = Field(
+        default="not_needed",
+        description="Protocol grounding lifecycle such as not_needed, pending, ready, blocked, or unavailable.",
+    )
+    retrieval_intents: list[str] = Field(default_factory=list, description="Guidance retrieval intents used to fetch this protocol.")
+    primary_message: str = Field(default="", description="Short grounded opener for the protocol when communication may present it.")
+    steps: list[str] = Field(default_factory=list, description="Grounded step-by-step instructions specific to the protocol.")
+    warnings: list[str] = Field(default_factory=list, description="Protocol-specific grounded warnings.")
+    communication_message: str = Field(default="", description="Preferred short message for the communication layer when the protocol is ready.")
+    ready_for_communication: bool = Field(default=False, description="Whether communication may safely surface the protocol steps.")
+    rationale: str = Field(default="", description="Short explanation of why the protocol is or is not ready.")
+
+
 class CommunicationHandoffSummary(BaseModel):
     mode: str = Field(
         default="question",
-        description="Communication mode such as question, instruction, status_update, urgent_instruction, or reassure.",
+        description="Hidden communication context such as question, instruction, status_update, urgent_instruction, or reassure.",
     )
     priority: str = Field(
         default="clarify",
-        description="Conversation priority such as execution, safety, reassure, or clarify.",
+        description="Hidden conversation priority such as execution, safety, reassure, or clarify.",
     )
     primary_message: str = Field(
         default="",
-        description="Short message the communication layer should prefer for the next turn.",
+        description="Legacy optional message field. Newer flows should treat this as optional metadata, not reply text.",
     )
     immediate_step: str | None = Field(
         default=None,
-        description="Optional single step the communication layer should emphasize right now.",
+        description="Optional single step the communication layer may consider if it needs scene context.",
     )
     ask_followup: bool = Field(
         default=False,
-        description="Whether the communication layer should append one short follow-up question now.",
+        description="Legacy flag indicating whether a follow-up topic remains open.",
     )
     next_question: str | None = Field(
         default=None,
-        description="Optional follow-up question to ask when clarification is still needed.",
+        description="Legacy optional question field. Newer flows should treat this as a hint only.",
     )
     next_focus: str = Field(
         default="general_check",
-        description="What the next communication turn should focus on.",
+        description="What the communication agent may want to focus on next.",
     )
     quick_replies: list[str] = Field(
         default_factory=list,
-        description="Suggested short replies for the communication layer.",
+        description="Suggested short replies derived from the reasoning context.",
+    )
+    open_question_key: str | None = Field(
+        default=None,
+        description="Stable key for the single unresolved topic the communication agent may want to clarify.",
+    )
+    should_surface_execution_update: bool = Field(
+        default=False,
+        description="Whether the reasoning layer thinks an operational status update should be surfaced if relevant.",
+    )
+    recommended_context_bits: list[str] = Field(
+        default_factory=list,
+        description="Short hidden context tags such as missing facts, notifications, or scene constraints.",
     )
     rationale: str = Field(
         default="",
-        description="Short explanation of why this communication mode was chosen.",
+        description="Short explanation of why this hidden communication context was chosen.",
     )
 
 
@@ -402,6 +552,10 @@ class FallAssessment(BaseModel):
     action: ActionSummary
     response_plan: ResponsePlanSummary = Field(default_factory=ResponsePlanSummary)
     guidance: GuidanceSummary
+    protocol_guidance: ProtocolGuidanceSummary = Field(
+        default_factory=ProtocolGuidanceSummary,
+        description="Structured mandatory-grounded protocol state for high-risk instructions such as CPR.",
+    )
     communication_handoff: CommunicationHandoffSummary = Field(
         default_factory=CommunicationHandoffSummary,
         description="Structured handoff telling the communication layer what to say or ask next.",
@@ -445,12 +599,33 @@ class CommunicationAgentAnalysis(BaseModel):
     bystander_present: bool = Field(default=False, description="Whether a bystander appears to be present.")
     bystander_can_help: bool = Field(default=False, description="Whether the bystander appears able or willing to help.")
     extracted_facts: list[str] = Field(default_factory=list, description="Structured facts extracted from the latest responder message.")
+    resolved_fact_keys: list[str] = Field(
+        default_factory=list,
+        description="Facts or question areas the communication agent now considers resolved in the conversation state.",
+    )
+    open_question_key: str | None = Field(
+        default=None,
+        description="Stable key for the single question the communication agent still considers open, if any.",
+    )
+    open_question_resolved: bool = Field(
+        default=False,
+        description="Whether the latest responder message resolved the previously open communication question.",
+    )
+    conversation_state_summary: str = Field(
+        default="",
+        description="Short hidden summary of what the communication agent currently believes is resolved or still needed.",
+    )
     reasoning_needed: bool = Field(default=False, description="Whether the communication AI believes a reasoning refresh is needed.")
     reasoning_reason: str = Field(default="", description="Short explanation for why reasoning is or is not needed.")
+    should_surface_execution_update: bool = Field(
+        default=False,
+        description="Whether the agent thinks an operational update such as family notification or dispatch should be surfaced now.",
+    )
     guidance_intent: str = Field(default="question", description="Conversational intent such as question, instruction, clarify, or reassure.")
     next_focus: str = Field(default="general_check", description="What the communication AI wants to learn or accomplish next.")
     immediate_step: str | None = Field(default=None, description="Optional single immediate step for the responder.")
     quick_replies: list[str] = Field(default_factory=list, description="Short suggested reply options.")
+    ai_server_error: str | None = Field(default=None, description="Specific error string from the AI server if a fallback was triggered.")
 
 
 class CommunicationTurnResponse(BaseModel):
@@ -459,6 +634,7 @@ class CommunicationTurnResponse(BaseModel):
     communication_analysis: CommunicationAgentAnalysis
     reasoning_invoked: bool = Field(..., description="Whether the reasoning engine was invoked for this turn.")
     reasoning_status: str = Field(..., description="Current reasoning status such as idle, pending, completed, or failed.")
+    reasoning_run_count: int = Field(default=0, description="How many background reasoning runs have completed for this session.")
     reasoning_reason: str = Field(default="", description="Short explanation for the current reasoning state.")
     reasoning_error: str | None = Field(default=None, description="Most recent background reasoning error, if any.")
     assistant_message: str = Field(..., description="Primary assistant message for the next conversational turn.")
@@ -470,9 +646,32 @@ class CommunicationTurnResponse(BaseModel):
         default_factory=list,
         description="Operational updates such as family notification or dispatch execution state.",
     )
+    action_states: list[ActionStateSummary] = Field(
+        default_factory=list,
+        description="Durable state for the main parallel action tracks in the session.",
+    )
     transcript_append: list[ConversationMessage] = Field(
         default_factory=list,
         description="Messages that should be appended to the session transcript.",
+    )
+    reasoning_runs: list["ReasoningRunSummary"] = Field(
+        default_factory=list,
+        description="Completed reasoning outputs captured separately for each run in this session.",
+    )
+
+
+class ReasoningRunSummary(BaseModel):
+    run_number: int = Field(..., description="1-based ordinal for the completed reasoning run.")
+    processed_version: int = Field(..., description="Input version that this reasoning run processed.")
+    reasoning_status: str = Field(default="completed", description="Final status for this reasoning run.")
+    reasoning_reason: str = Field(default="", description="Short summary for this reasoning run.")
+    assessment: FallAssessment | None = Field(
+        default=None,
+        description="Full reasoning-agent assessment snapshot returned for this run.",
+    )
+    execution_updates: list[ExecutionUpdate] = Field(
+        default_factory=list,
+        description="Execution updates produced by this reasoning run.",
     )
 
 
@@ -480,6 +679,7 @@ class CommunicationSessionStateResponse(BaseModel):
     session_id: str = Field(..., description="Server-side session identifier for the communication loop.")
     version: int = Field(default=0, description="Monotonic session-state version for streaming updates.")
     reasoning_status: str = Field(..., description="Current reasoning status such as idle, pending, completed, or failed.")
+    reasoning_run_count: int = Field(default=0, description="How many background reasoning runs have completed for this session.")
     reasoning_reason: str = Field(default="", description="Short explanation for the current reasoning state.")
     reasoning_error: str | None = Field(default=None, description="Most recent background reasoning error, if any.")
     interaction: InteractionSummary | None = Field(
@@ -498,7 +698,15 @@ class CommunicationSessionStateResponse(BaseModel):
         default_factory=list,
         description="Operational updates such as family notification or dispatch execution state.",
     )
+    action_states: list[ActionStateSummary] = Field(
+        default_factory=list,
+        description="Durable state for the main parallel action tracks in the session.",
+    )
     conversation_history: list[ConversationMessage] = Field(
         default_factory=list,
         description="Full transcript accumulated on the backend for the session.",
+    )
+    reasoning_runs: list[ReasoningRunSummary] = Field(
+        default_factory=list,
+        description="Completed reasoning outputs captured separately for each run in this session.",
     )

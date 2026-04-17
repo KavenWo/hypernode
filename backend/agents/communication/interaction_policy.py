@@ -117,7 +117,6 @@ class ReasoningRefreshDecision(BaseModel):
 
     refresh_required: bool = Field(..., description="Whether the reasoning engine should refresh now.")
     reason: str = Field(..., description="Short explanation of why a refresh is or is not needed.")
-    priority: str = Field(..., description="critical, medium, or low.")
 
 
 def choose_interaction_target(context: InteractionContext) -> InteractionDecision:
@@ -206,21 +205,18 @@ def should_refresh_reasoning(
         return ReasoningRefreshDecision(
             refresh_required=True,
             reason="A no-response timeout can change escalation behavior and should trigger a new reasoning pass.",
-            priority="critical",
         )
 
     if responder_mode_changed:
         return ReasoningRefreshDecision(
             refresh_required=True,
             reason="A responder-role change affects which questions and instructions are appropriate.",
-            priority="medium",
         )
 
     if contradiction_detected:
         return ReasoningRefreshDecision(
             refresh_required=True,
             reason="A contradiction was detected in the incoming information and the reasoning state should be reevaluated.",
-            priority="critical",
         )
 
     critical_facts = sorted(facts.intersection(CRITICAL_REASONING_FACT_KEYS))
@@ -228,7 +224,6 @@ def should_refresh_reasoning(
         return ReasoningRefreshDecision(
             refresh_required=True,
             reason=f"Critical new facts were reported: {', '.join(critical_facts)}.",
-            priority="critical",
         )
 
     protective_facts = sorted(facts.intersection(PROTECTIVE_REASONING_FACT_KEYS))
@@ -236,32 +231,27 @@ def should_refresh_reasoning(
         return ReasoningRefreshDecision(
             refresh_required=True,
             reason=f"Reassuring new facts were reported: {', '.join(protective_facts)}.",
-            priority="medium",
         )
 
     if normalized_message in LOW_SIGNAL_ACKNOWLEDGEMENTS:
         return ReasoningRefreshDecision(
             refresh_required=False,
             reason="The message is only a low-signal acknowledgement and does not materially change the clinical state.",
-            priority="low",
         )
 
     if active_execution_action in GUIDANCE_ONLY_ACTIONS and not facts:
         return ReasoningRefreshDecision(
             refresh_required=False,
             reason="Guidance is already in execution mode and no new risk-changing information was supplied.",
-            priority="low",
         )
 
     if facts:
         return ReasoningRefreshDecision(
             refresh_required=True,
             reason="New structured facts were reported and the reasoning state should be updated.",
-            priority="medium",
         )
 
     return ReasoningRefreshDecision(
         refresh_required=False,
         reason="No new critical information was detected, so the interaction can continue without refreshing reasoning yet.",
-        priority="low",
     )

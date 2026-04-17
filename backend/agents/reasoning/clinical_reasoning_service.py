@@ -5,7 +5,8 @@ import logging
 
 from google.genai import errors, types
 
-from agents.shared.config import FALLBACK_MODELS
+from agents.shared.config import REASONING_FALLBACK_MODELS
+from agents.shared.errors import parse_ai_error
 from agents.shared.schemas import (
     ClinicalAssessment,
     FallEvent,
@@ -57,9 +58,7 @@ async def assess_clinical_severity(
             "Live reasoning model unavailable. Using fallback clinical assessment for user %s.",
             event.user_id,
         )
-        return _fallback_clinical_assessment(
-            reasoning_outcome=reasoning_outcome,
-        )
+        return _fallback_clinical_assessment(reasoning_outcome=reasoning_outcome, ai_error=parse_ai_error(exc) if 'exc' in locals() else 'Live reasoning model client is unavailable.')
 
     try:
         logger.info(
@@ -88,15 +87,13 @@ async def assess_clinical_severity(
             event.user_id,
             exc,
         )
-        return _fallback_clinical_assessment(
-            reasoning_outcome=reasoning_outcome,
-        )
+        return _fallback_clinical_assessment(reasoning_outcome=reasoning_outcome, ai_error=parse_ai_error(exc) if 'exc' in locals() else 'Live reasoning model client is unavailable.')
 
 
 async def _generate_json_response(*, client, prompt: str, schema):
     last_error = None
 
-    for model_name in FALLBACK_MODELS:
+    for model_name in REASONING_FALLBACK_MODELS:
         for attempt in range(2):
             try:
                 logger.debug(
@@ -124,7 +121,7 @@ async def _generate_json_response(*, client, prompt: str, schema):
                     exc,
                 )
                 is_retryable = exc.code in {429, 500, 503}
-                is_last_attempt = attempt == 1 and model_name == FALLBACK_MODELS[-1]
+                is_last_attempt = attempt == 1 and model_name == REASONING_FALLBACK_MODELS[-1]
                 if not is_retryable or is_last_attempt:
                     raise
                 await asyncio.sleep(1 + attempt)
@@ -135,16 +132,14 @@ async def _generate_json_response(*, client, prompt: str, schema):
     raise RuntimeError("No model response was produced.")
 
 
-def _fallback_clinical_assessment(
-    *,
-    reasoning_outcome,
-) -> ClinicalAssessment:
+def _fallback_clinical_assessment(*, reasoning_outcome, ai_error: str | None = None) -> ClinicalAssessment:
     assessment = reasoning_outcome.to_clinical_assessment().model_copy(
         update={
             "reasoning_summary": (
                 "Fallback assessment used because the live reasoning model was unavailable. "
                 f"{reasoning_outcome.reasoning_summary}"
-            )
+            ),
+            "ai_server_error": ai_error,
         }
     )
     logger.info(

@@ -77,6 +77,7 @@ def build_phase2_retrieval_plan(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
     severity_hint: str | None = None,
+    forced_intents: list[str] | None = None,
 ) -> dict:
     policy = load_phase2_retrieval_policy()
     red_flags = _detect_red_flags(patient_profile=patient_profile, patient_answers=patient_answers)
@@ -120,7 +121,8 @@ def build_phase2_retrieval_plan(
 
     seen: set[str] = set()
     unique_intents: list[str] = []
-    for intent in intents:
+    ordered_candidates = [*(forced_intents or []), *intents]
+    for intent in ordered_candidates:
         if intent not in seen and intent in policy["intents"]:
             seen.add(intent)
             unique_intents.append(intent)
@@ -132,7 +134,10 @@ def build_phase2_retrieval_plan(
             unique_intents.index(intent),
         ),
     )
-    selected_intents = ordered_intents[: policy["default_intent_limit"]]
+    forced_intent_set = {intent for intent in (forced_intents or []) if intent in policy["intents"]}
+    required_intents = [intent for intent in ordered_intents if intent in forced_intent_set]
+    optional_intents = [intent for intent in ordered_intents if intent not in forced_intent_set]
+    selected_intents = required_intents + optional_intents[: policy["default_intent_limit"]]
     selected_queries = [policy["intents"][intent]["queries"][0] for intent in selected_intents]
 
     return {
@@ -150,11 +155,13 @@ def build_phase2_bucket_query_plan(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
     severity_hint: str | None = None,
+    forced_intents: list[str] | None = None,
 ) -> dict:
     retrieval_plan = build_phase2_retrieval_plan(
         patient_profile=patient_profile,
         patient_answers=patient_answers,
         severity_hint=severity_hint,
+        forced_intents=forced_intents,
     )
     bucket_policy = load_phase2_bucket_query_policy()
 

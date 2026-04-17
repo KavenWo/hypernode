@@ -85,7 +85,10 @@ def test_api_fall_flow() -> None:
     assert "response_plan" in assessment, assessment
     assert "escalation_action" in assessment["response_plan"], assessment
     assert "communication_handoff" in assessment, assessment
+    assert "protocol_guidance" in assessment, assessment
     assert assessment["communication_handoff"]["mode"] in {"question", "instruction", "status_update", "urgent_instruction", "reassure"}, assessment
+    assert "recommended_context_bits" in assessment["communication_handoff"], assessment
+    assert "should_surface_execution_update" in assessment["communication_handoff"], assessment
     assert assessment["detection"]["fall_detection_confidence_band"] == "high", assessment
     assert assessment["grounding"]["source"] in {"vertex_ai_search", "fallback_file"}, assessment
     assert assessment["audit"]["dispatch_triggered"] == (assessment["action"]["recommended"] == "emergency_dispatch"), assessment
@@ -118,6 +121,7 @@ def test_api_fall_flow() -> None:
     assert session_turn_payload["session_id"], session_turn_payload
     assert session_turn_payload["reasoning_invoked"] is True, session_turn_payload
     assert session_turn_payload["reasoning_status"] == "pending", session_turn_payload
+    assert session_turn_payload["reasoning_run_count"] == 0, session_turn_payload
     assert session_turn_payload["interaction"]["communication_target"] == "bystander", session_turn_payload
     assert session_turn_payload["assistant_message"], session_turn_payload
 
@@ -135,5 +139,18 @@ def test_api_fall_flow() -> None:
     assert session_state_payload is not None, session_turn_payload
     assert session_state_payload["conversation_history"], session_state_payload
     assert session_state_payload["assessment"] is not None, session_state_payload
+    assert session_state_payload["reasoning_run_count"] >= 1, session_state_payload
 
     assert session_state_payload["assessment"] is not None, session_state_payload
+
+    reset_response = client.post(
+        f"/api/v1/events/fall/session-reset/{session_turn_payload['session_id']}"
+    )
+    reset_response.raise_for_status()
+    reset_payload = reset_response.json()
+    assert reset_payload["reset"] is True, reset_payload
+
+    missing_state_response = client.get(
+        f"/api/v1/events/fall/session-state/{session_turn_payload['session_id']}"
+    )
+    assert missing_state_response.status_code == 404, missing_state_response.text

@@ -69,12 +69,14 @@ def run_phase2_retrieval(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
     severity_hint: str | None = None,
+    forced_intents: list[str] | None = None,
     max_results_per_query: int = 2,
 ) -> dict:
     retrieval_plan = build_phase2_bucket_query_plan(
         patient_profile=patient_profile,
         patient_answers=patient_answers,
         severity_hint=severity_hint,
+        forced_intents=forced_intents,
     )
 
     bucket_entries: dict[str, list[dict]] = defaultdict(list)

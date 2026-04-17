@@ -7,8 +7,10 @@ import logging
 
 from google.genai import errors, types
 
-from agents.shared.config import FALLBACK_MODELS
-from agents.shared.schemas import CommunicationAgentAnalysis, FallAssessment
+from agents.shared.config import COMMUNICATION_FALLBACK_MODELS
+from agents.shared.errors import parse_ai_error
+from agents.shared.schemas import CommunicationAgentAnalysis, ExecutionPlan, FallAssessment
+from app.fall.action_runtime_service import build_visible_execution_state_summary
 
 from .prompts import build_communication_analysis_prompt, build_communication_render_prompt
 
@@ -29,6 +31,84 @@ COMMUNICATION_FACT_VOCAB = {
     "patient_ok": ["i'm okay", "i am okay", "okay now", "i feel okay", "i'm fine", "i am fine"],
     "stable_speaking": ["i can talk", "talking fine", "speaking clearly"],
 }
+
+
+def _normalize_message_key(text: str | None) -> str:
+    return " ".join((text or "").strip().lower().split())
+
+
+def _summarize_previous_analysis(analysis: CommunicationAgentAnalysis | None) -> str:
+    if analysis is None:
+        return "No prior communication state."
+    return (
+        f"resolved={', '.join(analysis.resolved_fact_keys) or 'none'}; "
+        f"open_question={analysis.open_question_key or 'none'}; "
+        f"open_question_resolved={analysis.open_question_resolved}; "
+        f"next_focus={analysis.next_focus}; "
+        f"state={analysis.conversation_state_summary or 'none'}"
+    )
+
+
+def _summarize_acknowledged_reasoning_triggers(triggered_fact_keys: list[str] | set[str] | None) -> str:
+    normalized = sorted({item.strip().lower() for item in (triggered_fact_keys or []) if item and item.strip()})
+    if not normalized:
+        return "none"
+    return ", ".join(normalized)
+
+
+def _resolved_question_key_from_facts(facts: set[str]) -> str | None:
+    if {"breathing_normal", "abnormal_breathing", "not_breathing"}.intersection(facts):
+        return "breathing"
+    if {"pain_present", "mild_pain", "chest_pain"}.intersection(facts):
+        return "pain"
+    if "head_strike" in facts:
+        return "head_injury"
+    if "cannot_stand" in facts:
+        return "mobility"
+    return None
+
+
+def _state_summary(*, resolved_fact_keys: list[str], open_question_key: str | None, next_focus: str) -> str:
+    resolved = ", ".join(resolved_fact_keys) if resolved_fact_keys else "none"
+    return f"Resolved: {resolved}. Open question: {open_question_key or 'none'}. Next focus: {next_focus}."
+
+
+def _finalize_analysis_memory(
+    *,
+    analysis: CommunicationAgentAnalysis,
+    previous_analysis: CommunicationAgentAnalysis | None,
+) -> CommunicationAgentAnalysis:
+    previous_resolved = set(previous_analysis.resolved_fact_keys if previous_analysis else [])
+    extracted_facts = set(analysis.extracted_facts)
+    resolved_facts = sorted(previous_resolved.union(extracted_facts.intersection({"breathing_normal", "mild_pain", "patient_ok", "stable_speaking"})))
+    previous_open_question = previous_analysis.open_question_key if previous_analysis else None
+    resolved_question_key = _resolved_question_key_from_facts(extracted_facts)
+    open_question_resolved = bool(previous_open_question and resolved_question_key == previous_open_question)
+    open_question_key = analysis.open_question_key
+
+    if not open_question_key:
+        open_question_key = None
+    if open_question_resolved and open_question_key == previous_open_question:
+        open_question_key = None
+    if open_question_key == "none":
+        open_question_key = None
+
+    conversation_state_summary = analysis.conversation_state_summary.strip()
+    if not conversation_state_summary:
+        conversation_state_summary = _state_summary(
+            resolved_fact_keys=resolved_facts,
+            open_question_key=open_question_key,
+            next_focus=analysis.next_focus,
+        )
+
+    return analysis.model_copy(
+        update={
+            "resolved_fact_keys": resolved_facts,
+            "open_question_key": open_question_key,
+            "open_question_resolved": open_question_resolved,
+            "conversation_state_summary": conversation_state_summary,
+        }
+    )
 
 
 def _summarize_event(event, vitals) -> tuple[str, str]:
@@ -62,11 +142,31 @@ def _summarize_transcript(conversation_history) -> str:
 def _summarize_assessment(assessment: FallAssessment | None) -> str:
     if assessment is None:
         return "No prior reasoning snapshot."
+    parts = [
+        f"severity={assessment.clinical_assessment.severity}",
+        f"action={assessment.action.recommended}",
+        f"reasoning={assessment.clinical_assessment.reasoning_summary}",
+    ]
+    if assessment.clinical_assessment.missing_facts:
+        parts.append(f"missing={', '.join(assessment.clinical_assessment.missing_facts[:2])}")
+    if assessment.clinical_assessment.red_flags:
+        parts.append(f"red_flags={', '.join(assessment.clinical_assessment.red_flags[:3])}")
+    return "; ".join(parts)
+
+
+def _summarize_reasoning_handoff(assessment: FallAssessment | None) -> str:
+    if assessment is None:
+        return "No reasoning handoff metadata."
+    handoff = assessment.communication_handoff
+    bits = ", ".join(handoff.recommended_context_bits[:4]) if handoff.recommended_context_bits else "none"
     return (
-        f"severity={assessment.clinical_assessment.severity}; "
-        f"action={assessment.action.recommended}; "
-        f"reasoning={assessment.clinical_assessment.reasoning_summary}; "
-        f"primary_guidance={assessment.guidance.primary_message}"
+        f"mode={handoff.mode}; "
+        f"priority={handoff.priority}; "
+        f"open_question={handoff.open_question_key or 'none'}; "
+        f"surface_execution_update={handoff.should_surface_execution_update}; "
+        f"next_focus={handoff.next_focus}; "
+        f"context_bits={bits}; "
+        f"rationale={handoff.rationale or 'none'}"
     )
 
 
@@ -104,6 +204,8 @@ def _heuristic_analysis(
     *,
     latest_message: str,
     previous_assessment: FallAssessment | None,
+    previous_analysis: CommunicationAgentAnalysis | None = None,
+    acknowledged_reasoning_triggers: set[str] | None = None,
 ) -> CommunicationAgentAnalysis:
     if not latest_message.strip():
         return CommunicationAgentAnalysis(
@@ -114,8 +216,13 @@ def _heuristic_analysis(
             bystander_present=False,
             bystander_can_help=False,
             extracted_facts=[],
+            resolved_fact_keys=[],
+            open_question_key="general_check",
+            open_question_resolved=False,
+            conversation_state_summary="Resolved: none. Open question: general_check. Next focus: responsiveness.",
             reasoning_needed=False,
             reasoning_reason="The session just started, so the first step is a patient-first check.",
+            should_surface_execution_update=False,
             guidance_intent="patient_check",
             next_focus="responsiveness",
             immediate_step=None,
@@ -126,24 +233,52 @@ def _heuristic_analysis(
     facts = _extract_facts(latest_message, role)
     bystander_can_help = "bystander_can_help" in facts
     critical_facts = {"abnormal_breathing", "not_breathing", "severe_bleeding", "head_strike", "unresponsive", "chest_pain"}
-    reasoning_needed = bool(critical_facts.intersection(facts))
+    acknowledged = {item.strip().lower() for item in (acknowledged_reasoning_triggers or set()) if item and item.strip()}
+    new_critical_facts = critical_facts.intersection(facts).difference(acknowledged)
+    reasoning_needed = bool(new_critical_facts)
+    previous_open_question = previous_analysis.open_question_key if previous_analysis else None
+    resolved_question_key = _resolved_question_key_from_facts(set(facts))
+    open_question_resolved = bool(previous_open_question and resolved_question_key == previous_open_question)
+    action = previous_assessment.action.recommended if previous_assessment is not None else None
 
     if role == "bystander":
-        followup = "Okay. Is the patient awake and breathing normally?"
+        if previous_open_question == "breathing" and open_question_resolved:
+            followup = "Okay. Tell me if anything else changes."
+            next_focus = "general_check"
+            open_question_key = None
+        else:
+            followup = "Okay. Is the patient awake and breathing normally?"
+            next_focus = "breathing"
+            open_question_key = "breathing"
         target = "bystander"
         quick_replies = ["Awake", "Breathing normally", "Breathing strangely", "Not responding"]
     elif role == "patient":
-        if "head_strike" in facts:
+        if previous_open_question == "breathing" and open_question_resolved:
+            if reasoning_needed:
+                followup = "Okay. Stay still for me."
+            else:
+                followup = "Okay. Stay calm and tell me what hurts most."
+            next_focus = "pain"
+            open_question_key = "pain"
+        elif "head_strike" in facts:
             followup = "Okay. Stay still for me. Did you black out at all?"
+            next_focus = "head_injury"
+            open_question_key = "head_injury"
         elif "abnormal_breathing" in facts or "not_breathing" in facts:
             followup = "Okay. Stay still. Tell me if breathing gets worse."
+            next_focus = "breathing"
+            open_question_key = None
         else:
             followup = "Okay. Can you breathe normally and tell me where it hurts?"
+            next_focus = "breathing"
+            open_question_key = "breathing"
         target = "patient"
         quick_replies = ["Breathing okay", "Hard to breathe", "Head hurts", "I can't stand"]
     else:
         followup = "A fall was detected. Are you the patient or helping someone?"
         target = "unknown"
+        next_focus = "general_check"
+        open_question_key = "general_check"
         quick_replies = ["I am the patient", "I am helping", "No response", "Need help now"]
 
     immediate_step = None
@@ -154,7 +289,10 @@ def _heuristic_analysis(
     elif previous_assessment is not None and previous_assessment.guidance.steps:
         immediate_step = previous_assessment.guidance.steps[0]
 
-    return CommunicationAgentAnalysis(
+    if action == "monitor" and immediate_step:
+        immediate_step = None
+
+    analysis = CommunicationAgentAnalysis(
         followup_text=followup,
         responder_role=role,
         communication_target=target,
@@ -162,13 +300,22 @@ def _heuristic_analysis(
         bystander_present=bystander_present,
         bystander_can_help=bystander_can_help,
         extracted_facts=facts,
+        resolved_fact_keys=[],
+        open_question_key=open_question_key,
+        open_question_resolved=open_question_resolved,
+        conversation_state_summary="",
         reasoning_needed=reasoning_needed,
-        reasoning_reason="Critical new facts were reported." if reasoning_needed else "No critical new facts were detected yet.",
+        reasoning_reason=(
+            f"Critical new facts were reported: {', '.join(sorted(new_critical_facts))}."
+            if reasoning_needed
+            else "No new escalation reason was detected beyond what reasoning already knows."
+        ),
+        should_surface_execution_update=action in {"contact_family", "dispatch_pending_confirmation", "emergency_dispatch"},
         guidance_intent="instruction" if immediate_step else "question",
-        next_focus="breathing" if "abnormal_breathing" in facts or "not_breathing" in facts else "responsiveness",
+        next_focus=next_focus,
         immediate_step=immediate_step,
-        quick_replies=quick_replies,
-    )
+        quick_replies=quick_replies, ai_server_error=ai_error)
+    return _finalize_analysis_memory(analysis=analysis, previous_analysis=previous_analysis)
 
 
 def _fallback_rendered_followup(
@@ -190,10 +337,10 @@ def _fallback_rendered_followup(
 
     if action == "monitor":
         if analysis.communication_target == "patient":
-            return "Okay. Rest where you are and tell me if pain or breathing gets worse.", "Rest where you are."
+            return "Okay. Stay calm and tell me if pain or breathing gets worse.", None
         if analysis.communication_target == "bystander":
-            return "Okay. Keep watching them and tell me if anything gets worse.", "Keep watching them."
-        return "Okay. Stay safe and tell me if anything changes.", "Stay safe."
+            return "Okay. Tell me if anything gets worse.", None
+        return "Okay. Tell me if anything changes.", None
 
     if analysis.communication_target == "bystander":
         if step_text:
@@ -263,7 +410,7 @@ def _apply_assessment_language_guardrails(
 
 async def _generate_structured_output(*, client, prompt: str, schema):
     last_error = None
-    for model_name in FALLBACK_MODELS:
+    for model_name in COMMUNICATION_FALLBACK_MODELS:
         for attempt in range(2):
             try:
                 return await client.aio.models.generate_content(
@@ -277,7 +424,7 @@ async def _generate_structured_output(*, client, prompt: str, schema):
             except errors.APIError as exc:
                 last_error = exc
                 is_retryable = exc.code in {429, 500, 503}
-                is_last_attempt = attempt == 1 and model_name == FALLBACK_MODELS[-1]
+                is_last_attempt = attempt == 1 and model_name == COMMUNICATION_FALLBACK_MODELS[-1]
                 if not is_retryable or is_last_attempt:
                     raise
                 await asyncio.sleep(1 + attempt)
@@ -295,21 +442,36 @@ async def analyze_communication_turn(
     conversation_history,
     latest_message: str,
     previous_assessment: FallAssessment | None,
+    previous_analysis: CommunicationAgentAnalysis | None = None,
+    pending_reasoning_context: str = "",
+    execution_plan: ExecutionPlan | None = None,
+    execution_updates: list | None = None,
+    acknowledged_reasoning_triggers: set[str] | None = None,
 ) -> CommunicationAgentAnalysis:
     if client is None:
-        return _heuristic_analysis(
-            latest_message=latest_message,
-            previous_assessment=previous_assessment,
-        )
+        return _heuristic_analysis(latest_message=latest_message, previous_assessment=previous_assessment, previous_analysis=previous_analysis, ai_error='Live reasoning model client is unavailable.' if client is None else parse_ai_error(exc) if 'exc' in locals() else None)
 
     event_summary, vitals_summary = _summarize_event(event, vitals)
+
+    # Enrich the assessment summary with background reasoning context
+    assessment_summary = _summarize_assessment(previous_assessment)
+    if pending_reasoning_context:
+        assessment_summary += f"\n[Background reasoning update]: {pending_reasoning_context}"
+    if execution_plan and execution_plan.steps:
+        step_preview = execution_plan.steps[0]
+        assessment_summary += f"\n[Execution plan available]: Next step: {step_preview} (deliver one step at a time, ask for confirmation before proceeding)"
+
     prompt = build_communication_analysis_prompt(
         event_summary=event_summary,
         patient_summary=_summarize_patient(patient_profile),
         vitals_summary=vitals_summary,
         transcript_summary=_summarize_transcript(conversation_history),
         latest_message=latest_message,
-        previous_assessment_summary=_summarize_assessment(previous_assessment),
+        previous_assessment_summary=assessment_summary,
+        reasoning_handoff_summary=_summarize_reasoning_handoff(previous_assessment),
+        previous_communication_summary=_summarize_previous_analysis(previous_analysis),
+        acknowledged_reasoning_summary=_summarize_acknowledged_reasoning_triggers(acknowledged_reasoning_triggers),
+        execution_state_summary=build_visible_execution_state_summary(execution_updates or []),
     )
 
     try:
@@ -321,13 +483,13 @@ async def analyze_communication_turn(
         parsed = response.parsed
         if parsed is None:
             parsed = CommunicationAgentAnalysis.model_validate_json(response.text or "{}")
-        return parsed
+        return _finalize_analysis_memory(
+            analysis=parsed,
+            previous_analysis=previous_analysis,
+        )
     except Exception as exc:
         logger.warning("Communication analysis model failed. Using heuristic fallback. Error: %s", exc)
-        return _heuristic_analysis(
-            latest_message=latest_message,
-            previous_assessment=previous_assessment,
-        )
+        return _heuristic_analysis(latest_message=latest_message, previous_assessment=previous_assessment, previous_analysis=previous_analysis, acknowledged_reasoning_triggers=acknowledged_reasoning_triggers, ai_error='Live reasoning model client is unavailable.' if client is None else parse_ai_error(exc) if 'exc' in locals() else None)
 
 
 async def render_communication_turn(
@@ -346,13 +508,7 @@ async def render_communication_turn(
             analysis=analysis,
             assessment=assessment,
         )
-        guarded = analysis.model_copy(
-            update={
-                "followup_text": followup_text,
-                "immediate_step": immediate_step,
-                "guidance_intent": "instruction",
-            }
-        )
+        guarded = analysis.model_copy(update={"followup_text": followup_text, "immediate_step": immediate_step, "guidance_intent": "instruction", "ai_server_error": analysis.ai_server_error or "Live reasoning model client is unavailable."})
         return _apply_assessment_language_guardrails(
             analysis=guarded,
             assessment=assessment,
@@ -389,8 +545,14 @@ async def render_communication_turn(
                 "bystander_present": analysis.bystander_present,
                 "bystander_can_help": analysis.bystander_can_help,
                 "extracted_facts": analysis.extracted_facts,
+                "resolved_fact_keys": analysis.resolved_fact_keys,
+                "open_question_key": analysis.open_question_key,
+                "open_question_resolved": analysis.open_question_resolved,
+                "conversation_state_summary": analysis.conversation_state_summary,
                 "reasoning_needed": analysis.reasoning_needed,
                 "reasoning_reason": analysis.reasoning_reason,
+                "should_surface_execution_update": analysis.should_surface_execution_update,
+                "ai_server_error": analysis.ai_server_error,
             }
         )
         return _apply_assessment_language_guardrails(
@@ -405,13 +567,7 @@ async def render_communication_turn(
             analysis=analysis,
             assessment=assessment,
         )
-        guarded = analysis.model_copy(
-            update={
-                "followup_text": followup_text,
-                "immediate_step": immediate_step,
-                "guidance_intent": "instruction",
-            }
-        )
+        guarded = analysis.model_copy(update={"followup_text": followup_text, "immediate_step": immediate_step, "guidance_intent": "instruction", "ai_server_error": analysis.ai_server_error or "Live reasoning model client is unavailable."})
         return _apply_assessment_language_guardrails(
             analysis=guarded,
             assessment=assessment,

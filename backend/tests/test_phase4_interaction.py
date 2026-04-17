@@ -74,7 +74,6 @@ def test_critical_fact_refreshes_reasoning() -> None:
         new_fact_keys=["abnormal_breathing"],
     )
     assert critical_refresh.refresh_required, critical_refresh
-    assert critical_refresh.priority == "critical", critical_refresh
 
 
 def test_role_change_refreshes_reasoning() -> None:

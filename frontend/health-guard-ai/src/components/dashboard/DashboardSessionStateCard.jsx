@@ -1,3 +1,5 @@
+import { MessageSquare, Users, BrainCircuit, Zap, Shield } from "lucide-react";
+
 function formatScore(value) {
   return typeof value === "number" ? value.toFixed(2) : value ?? "-";
 }
@@ -16,35 +18,6 @@ function toTitleCase(value) {
     .join(" ");
 }
 
-function getReasoningTone(status) {
-  if (status === "pending") {
-    return {
-      panelClass: "dashboard-tone-pending",
-      title: "Reasoning Agent Processing",
-      summary: "A clinical reasoning refresh is running in the background.",
-    };
-  }
-  if (status === "failed") {
-    return {
-      panelClass: "dashboard-tone-critical",
-      title: "Reasoning Agent Failed",
-      summary: "The background reasoning run failed and needs attention.",
-    };
-  }
-  if (status === "completed") {
-    return {
-      panelClass: "dashboard-tone-success",
-      title: "Reasoning Snapshot Ready",
-      summary: "The latest reasoning result is available for the session.",
-    };
-  }
-  return {
-    panelClass: "dashboard-tone-neutral",
-    title: "Reasoning Idle",
-    summary: "No background reasoning run is active right now.",
-  };
-}
-
 export default function DashboardSessionStateCard({
   sessionId,
   streamStatus,
@@ -52,118 +25,287 @@ export default function DashboardSessionStateCard({
   latestAssessment,
   error,
   historyCount,
+  phase,
 }) {
-  const reasoningTone = getReasoningTone(latestTurn?.reasoning_status);
+  // Communication Agent Logic
+  const isCommRunning = phase === "sending" || phase === "starting";
+  const commStatus = isCommRunning ? "pending" : (latestTurn ? "active" : "idle");
+  let commStatusText = latestTurn ? "Listening" : "Standby";
+  if (isCommRunning) commStatusText = "Thinking";
+  if (streamStatus === "connecting") commStatusText = "Connecting";
+  
+  // Bystander Agent Logic
+  const bystanderAvailable = latestTurn?.interaction?.bystander_available;
+  const bystanderCanHelp = latestTurn?.interaction?.bystander_can_help;
+  const guidanceSteps = latestTurn?.guidance_steps || [];
+  let bystanderStatus = "idle";
+  let bystanderStatusText = "Standby";
+  
+  if (bystanderAvailable) {
+    bystanderStatus = "active";
+    bystanderStatusText = "Engaged";
+  } else if (bystanderAvailable === false) {
+    bystanderStatus = "idle";
+    bystanderStatusText = "No Bystander";
+  }
+
+  // Reasoning Agent Logic
+  const reasoningState = latestTurn?.reasoning_status;
+  let reasoningStatus = "idle";
+  let reasoningStatusText = "Standby";
+  let reasoningPulsing = false;
+  
+  if (reasoningState === "pending") {
+    reasoningStatus = "pending";
+    reasoningStatusText = "Analyzing";
+    reasoningPulsing = true;
+  } else if (reasoningState === "completed") {
+    reasoningStatus = "success";
+    reasoningStatusText = "Completed";
+  } else if (reasoningState === "failed") {
+    reasoningStatus = "pending"; 
+    reasoningStatusText = "Failed";
+  }
+
+  // Execution Agent Logic
+  const executionUpdates = latestTurn?.execution_updates || [];
+  const actionStates = latestTurn?.action_states || [];
+  
+  let executionStatus = "idle";
+  let executionStatusText = "Standby";
+  let executionActivity = latestTurn 
+    ? "Awaiting actionable triggers from the reasoning engine." 
+    : "Standing by for emergency action triggers.";
+  
+  if (executionUpdates.length > 0 || actionStates.length > 0) {
+    const hasPending = executionUpdates.some(u => ["pending_confirmation", "queued"].includes(u.status));
+    const hasActive = executionUpdates.some(u => u.status === "active");
+    
+    if (hasActive || hasPending) {
+      executionStatus = "active";
+      executionStatusText = "Running";
+      executionActivity = "Executing prioritized response protocol steps or dispatch sequences.";
+    } else {
+      executionStatus = "success";
+      executionStatusText = "Executed";
+      executionActivity = "Response plan actions completed successfully.";
+    }
+  }
+
+  // Sentinel Agent Logic
+  const sentinelStatus = "idle";
+  const sentinelStatusText = "Unavailable";
 
   return (
-    <div className="dashboard-stack">
-      <div className="card">
-        <div className="card-title">Session State</div>
-
-        {!latestTurn && (
-          <p style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6 }}>
-            This panel reflects what the backend currently knows about the live session once the conversation starts.
-          </p>
-        )}
-
-        {latestTurn && (
-          <>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-              <span className="tag">Session - {sessionId || "-"}</span>
-              <span className="tag">Reasoning - {latestTurn.reasoning_status}</span>
-              <span className="tag">Stream - {streamStatus}</span>
-            </div>
-
-            <div className={`dashboard-summary-card ${reasoningTone.panelClass}`}>
-              <div className="form-label" style={{ marginBottom: 6 }}>{reasoningTone.title}</div>
-              <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: 8 }}>
-                {reasoningTone.summary}
-              </div>
-              <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6 }}>
-                {latestTurn.interaction?.reasoning_refresh?.required ? "required" : "not required"} [{latestTurn.interaction?.reasoning_refresh?.priority}] - {latestTurn.reasoning_reason || latestTurn.interaction?.reasoning_refresh?.reason}
-              </div>
-              {latestTurn.reasoning_status === "pending" && (
-                <div className="typing-dots" aria-label="Reasoning agent processing" style={{ marginTop: 10 }}>
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              )}
-              {latestTurn.reasoning_error && (
-                <div style={{ marginTop: 10, fontSize: 13, color: "var(--red)", lineHeight: 1.6 }}>
-                  {latestTurn.reasoning_error}
-                </div>
-              )}
-            </div>
-
-            <div className="form-group" style={{ marginTop: 16 }}>
-              <label className="form-label">Assistant Message</label>
-              <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.7 }}>
-                {latestTurn.assistant_message}
-              </div>
-            </div>
-
-            {latestTurn.guidance_steps?.length > 0 && (
-              <div className="form-group">
-                <label className="form-label">Immediate Steps</label>
-                <div className="instruction-box">
-                  {latestTurn.guidance_steps.map((step, index) => (
-                    <div className="instruction-step" key={`${step}-${index}`}>
-                      <span className="step-num">{index + 1}</span>
-                      <p>{step}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </>
-        )}
+    <div className="card" style={{ padding: "18px 20px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div className="card-title" style={{ marginBottom: 0 }}>Agentic Workflow Monitor</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <span className="tag">Session - {sessionId || "-"}</span>
+          <span className="tag">Stream - {streamStatus}</span>
+          <span className="tag">History - {historyCount}</span>
+        </div>
       </div>
 
+      {error && (
+        <div style={{ padding: "12px 14px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: "var(--radius-sm)", fontSize: 13, marginBottom: 16 }}>
+          {error}
+        </div>
+      )}
 
+      {/* Communication Agent */}
+      <div className={`agent-card ${isCommRunning ? 'reasoning-pulse-border' : ''}`}>
+        <div className="agent-header">
+          <div className="agent-title-group">
+            <div className={`agent-icon-box ${commStatus} ${isCommRunning ? 'pulsing' : ''}`}>
+              <MessageSquare size={16} />
+            </div>
+            <span>Communication Agent</span>
+          </div>
+          <div className={`agent-status-tag ${commStatus}`}>
+            {commStatusText}
+          </div>
+        </div>
+        <div className="agent-detail">
+          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Interaction Analysis:</div>
+          <div style={{ marginBottom: 10 }}>Extracting intent, responder availability, and mapping clinical facts.</div>
+          
+          <div className="agent-meta-row">
+            {latestTurn ? (
+              <>
+                <span className="tag">Patient Status - {toTitleCase(latestTurn.interaction?.patient_response_status)}</span>
+                {latestTurn.interaction?.new_fact_keys && latestTurn.interaction.new_fact_keys.length > 0 && (
+                   <span className="tag tag-green">New Facts Logged</span>
+                )}
+              </>
+            ) : (
+                <span className="tag">Awaiting Dialogue</span>
+            )}
+          </div>
+          {latestTurn?.communication_analysis?.ai_server_error && (
+            <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: 6, fontSize: 13, lineHeight: 1.5 }}>
+              <strong style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.5px" }}>AI Server Fallback</strong>
+              <div style={{ marginTop: 2, opacity: 0.9 }}>{latestTurn.communication_analysis.ai_server_error}</div>
+            </div>
+          )}
+        </div>
+      </div>
 
-      <div className="card">
-        <div className="card-title">Assessment Snapshot</div>
+      {/* Bystander Agent */}
+      <div className="agent-card">
+        <div className="agent-header">
+          <div className="agent-title-group">
+            <div className={`agent-icon-box ${bystanderStatus}`}>
+              <Users size={16} />
+            </div>
+            <span>Bystander Agent</span>
+          </div>
+          <div className={`agent-status-tag ${bystanderStatus}`}>
+            {bystanderStatusText}
+          </div>
+        </div>
+        <div className="agent-detail">
+          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Scene Evaluation:</div>
+          <div style={{ marginBottom: guidanceSteps.length > 0 ? 10 : 0 }}>
+            {!latestTurn ? "Standing by to evaluate scene dynamics." :
+              (bystanderAvailable ? 
+                (bystanderCanHelp ? "Bystander confirmed and capable of providing assistance." : "Bystander present but unable to help.") : 
+                "No capable bystander identified at the scene.")}
+          </div>
+          
+          {guidanceSteps.length > 0 && (
+            <div style={{ marginTop: 10, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "6px", padding: "12px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.5px" }}>
+                Immediate Instructions Provided
+              </div>
+              <ul style={{ paddingLeft: 18, margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--text-sub)" }}>
+                {guidanceSteps.map((step, idx) => (
+                  <li key={idx} style={{ marginBottom: 4 }}>{step}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
 
-        {!latestAssessment && (
-          <p style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6 }}>
-            Once reasoning is invoked, the latest severity, action, and summary will appear here.
-          </p>
-        )}
-
-        {latestAssessment && (
-          <>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+      {/* Reasoning Agent */}
+      <div className={`agent-card ${reasoningPulsing ? 'reasoning-pulse-border' : ''}`}>
+        <div className="agent-header">
+          <div className="agent-title-group">
+            <div className={`agent-icon-box ${reasoningStatus} ${reasoningPulsing ? 'pulsing' : ''}`}>
+              <BrainCircuit size={16} />
+            </div>
+            <span>Reasoning Agent</span>
+          </div>
+          <div className={`agent-status-tag ${reasoningStatus}`}>
+            {reasoningStatusText}
+          </div>
+        </div>
+        
+        <div className="agent-detail">
+          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Clinical Justification:</div>
+          <div style={{ marginBottom: 12 }}>
+            {!latestTurn ? "Standing by to monitor vitals and evaluate clinical severity." :
+              (latestTurn.reasoning_status === "pending" ? (
+                 <>
+                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, color: "var(--amber)" }}>
+                     <div className="typing-dots"><span></span><span></span><span></span></div>
+                     Evaluating latest vitals and context...
+                   </div>
+                   {latestAssessment?.clinical_assessment?.reasoning_summary && (
+                     <div style={{ opacity: 0.65, borderLeft: "2px solid var(--border)", paddingLeft: 8, fontSize: 13 }}>
+                       <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", marginBottom: 2 }}>Previous Run:</div>
+                       {latestAssessment.clinical_assessment.reasoning_summary}
+                     </div>
+                   )}
+                 </>
+              ) : (
+                 latestAssessment?.clinical_assessment?.reasoning_summary || "Awaiting significant changes in state or vital signs to run full reasoning refresh."
+              ))
+            }
+            
+            {/* Show why it triggered if running/completed just now */}
+            {latestTurn?.reasoning_reason && latestTurn.reasoning_status === "pending" && (
+              <div style={{ marginTop: 6, fontSize: 12, fontStyle: "italic", opacity: 0.8 }}>
+                Trigger: {latestTurn.reasoning_reason}
+              </div>
+            )}
+          </div>
+          
+          {latestAssessment && (
+            <div className="agent-meta-row" style={{ marginTop: 12 }}>
               <span className={`tag ${latestAssessment.clinical_assessment?.severity === "critical" ? "tag-red" : ""}`}>
                 Severity - {formatSeverity(latestAssessment.clinical_assessment?.severity)}
               </span>
-              <span className="tag">Action - {latestAssessment.action?.recommended}</span>
-              <span className="tag">Clinical - {formatScore(latestAssessment.clinical_assessment?.clinical_confidence_score)}</span>
+              <span className="tag">Confidence - {formatScore(latestAssessment.clinical_assessment?.clinical_confidence_score)}</span>
+              {latestTurn.reasoning_run_count > 0 && (
+                <span className="tag">Runs: {latestTurn.reasoning_run_count}</span>
+              )}
+              {latestTurn?.interaction?.reasoning_refresh?.required && (
+                <span className="tag tag-orange">Rerun Queued</span>
+              )}
             </div>
+          )}
 
-            <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.7 }}>
-              {latestAssessment.clinical_assessment?.reasoning_summary}
+          {(latestTurn?.reasoning_error || latestAssessment?.clinical_assessment?.ai_server_error) && (
+            <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: 6, fontSize: 13, lineHeight: 1.5 }}>
+              <strong style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.5px" }}>AI Server Fallback</strong>
+              <div style={{ marginTop: 2, opacity: 0.9 }}>
+                {latestTurn?.reasoning_error || latestAssessment?.clinical_assessment?.ai_server_error}
+              </div>
             </div>
-          </>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="card-title">Dashboard Activity</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-          <span className="tag">History entries - {historyCount}</span>
-          <span className="tag">Stream - {streamStatus}</span>
+          )}
         </div>
-        {error ? (
-          <div style={{ padding: "12px 14px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: "var(--radius-sm)", fontSize: 13 }}>
-            {error}
-          </div>
-        ) : (
-          <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.7 }}>
-            Incident history is updated automatically when the backend moves into a dispatch or pending-dispatch action.
-          </div>
-        )}
       </div>
+
+      {/* Execution Agent */}
+      <div className="agent-card">
+        <div className="agent-header">
+          <div className="agent-title-group">
+            <div className={`agent-icon-box ${executionStatus}`}>
+              <Zap size={16} />
+            </div>
+            <span>Execution Agent</span>
+          </div>
+          <div className={`agent-status-tag ${executionStatus}`}>
+            {executionStatusText}
+          </div>
+        </div>
+        <div className="agent-detail">
+          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Action Dispatcher:</div>
+          <div style={{ marginBottom: executionUpdates.length > 0 ? 10 : 0 }}>{executionActivity}</div>
+          
+          {executionUpdates.length > 0 && (
+            <div className="agent-meta-row" style={{ marginTop: 6, gap: 6 }}>
+              {executionUpdates.map((update, idx) => (
+                <span key={idx} className={`tag ${update.status === "completed" ? "tag-green" : update.status === "active" ? "tag-blue" : ""}`}>
+                  {toTitleCase(update.type)}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sentinel Agent */}
+      <div className="agent-card" style={{ opacity: 0.6 }}>
+        <div className="agent-header">
+          <div className="agent-title-group">
+            <div className={`agent-icon-box ${sentinelStatus}`}>
+              <Shield size={16} />
+            </div>
+            <span>Sentinel Agent</span>
+          </div>
+          <div className={`agent-status-tag ${sentinelStatus}`}>
+            {sentinelStatusText}
+          </div>
+        </div>
+        <div className="agent-detail">
+          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Safety Guardrails:</div>
+          <div>Agent is currently deactivated. Safety protocols are intrinsically handled by the base reasoning pipeline.</div>
+        </div>
+      </div>
+
     </div>
   );
 }

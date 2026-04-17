@@ -13,6 +13,11 @@ from typing import Optional
 from fastapi import BackgroundTasks
 
 from agents.bystander.guidance_normalizer import normalize_guidance_from_buckets
+from agents.bystander.protocol_grounding import (
+    build_protocol_guidance_summary,
+    collect_required_protocol_intents,
+    identify_protocol_candidate,
+)
 from agents.bystander.retrieval_engine import run_phase2_retrieval
 from agents.bystander.retrieval_policy import build_phase2_retrieval_plan
 from agents.communication.interaction_policy import (
@@ -25,7 +30,6 @@ from agents.reasoning.support_grounding import run_reasoning_support_grounding
 from agents.sentinel.vital_agent import inspect_vitals
 from agents.sentinel.vision_agent import inspect_fall_event
 from agents.shared.config import get_genai_client
-from agents.triage.question_agent import generate_triage_questions
 from app.fall.contracts import (
     ActionSummary,
     AuditSummary,
@@ -41,6 +45,7 @@ from app.fall.contracts import (
     InteractionInput,
     InteractionSummary,
     PatientAnswer,
+    ProtocolGuidanceSummary,
     ReasoningRefreshSummary,
     TriageQuestionSet,
     UserMedicalProfile,
@@ -90,12 +95,14 @@ def build_guidance_query(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
     severity_hint: str | None = None,
+    forced_intents: list[str] | None = None,
 ) -> str:
     """Choose the primary query from the lightweight Phase 2 retrieval policy."""
     retrieval_plan = build_phase2_retrieval_plan(
         patient_profile=patient_profile,
         patient_answers=patient_answers,
         severity_hint=severity_hint,
+        forced_intents=forced_intents,
     )
     return retrieval_plan["primary_query"]
 
@@ -135,6 +142,29 @@ def _extract_fact_keys_from_answers(patient_answers: list[PatientAnswer]) -> lis
         if any(keyword in answer_text for keyword in keywords):
             facts.append(fact_key)
     return facts
+
+
+def _has_meaningful_conversation_context(
+    *,
+    patient_answers: list[PatientAnswer],
+    interaction: InteractionInput | None,
+) -> bool:
+    """Return whether we have enough conversational context to justify retrieval.
+
+    The first bootstrap reasoning pass should be fast and provisional. Until we
+    have at least one meaningful responder message or extracted fact, grounding
+    retrieval adds latency without enough context to be worth it.
+    """
+
+    if any((answer.answer or "").strip() for answer in patient_answers):
+        return True
+    if interaction is None:
+        return False
+    if (interaction.message_text or "").strip():
+        return True
+    if interaction.new_fact_keys:
+        return True
+    return False
 
 
 def build_interaction_summary(
@@ -188,7 +218,6 @@ def build_interaction_summary(
         reasoning_refresh=ReasoningRefreshSummary(
             required=refresh_decision.refresh_required,
             reason=refresh_decision.reason,
-            priority=refresh_decision.priority,
         ),
         testing_assume_bystander=bool(interaction and interaction.testing_assume_bystander),
     )
@@ -199,19 +228,8 @@ def build_fall_questions(
     vitals: VitalSigns | None = None,
     interaction: InteractionInput | None = None,
 ) -> TriageQuestionSet:
-    """Return the current deterministic question set for a fall incident."""
-    patient_profile = load_user_profile(event.user_id)
-    interaction_summary = build_interaction_summary(
-        interaction=interaction,
-        patient_answers=[],
-        recommended_action=None,
-    )
-    return generate_triage_questions(
-        event=event,
-        patient_profile=patient_profile,
-        vitals=vitals,
-        interaction=interaction_summary,
-    )
+    """Return a stub question set since the legacy triage agent is deprecated."""
+    return TriageQuestionSet(questions=[])
 
 
 def _should_trigger_dispatch(action: str) -> bool:
@@ -326,16 +344,19 @@ def _run_grounded_guidance_stage(
     patient_answers: list[PatientAnswer],
     clinical_severity: str,
     action: str,
+    forced_intents: list[str] | None = None,
 ) -> tuple[dict, dict, GuidanceSummary]:
     retrieval_plan = build_phase2_retrieval_plan(
         patient_profile=patient_profile,
         patient_answers=patient_answers,
         severity_hint=clinical_severity,
+        forced_intents=forced_intents,
     )
     retrieval_result = run_phase2_retrieval(
         patient_profile=patient_profile,
         patient_answers=patient_answers,
         severity_hint=clinical_severity,
+        forced_intents=forced_intents,
     )
     normalized_guidance = normalize_guidance_from_buckets(
         buckets=retrieval_result["bucketed_snippets"],
@@ -364,6 +385,7 @@ def _build_clinical_assessment_summary(clinical_assessment) -> ClinicalAssessmen
         reasoning_summary=clinical_assessment.reasoning_summary,
         response_plan=clinical_assessment.response_plan,
         reasoning_trace=clinical_assessment.reasoning_trace,
+        ai_server_error=getattr(clinical_assessment, "ai_server_error", None),
     )
 
 
@@ -371,7 +393,10 @@ def _should_trigger_reasoning_support(
     *,
     action: str,
     clinical_assessment: ClinicalAssessmentSummary,
+    allow_grounding: bool,
 ) -> bool:
+    if not allow_grounding:
+        return False
     high_risk_flags = {
         "abnormal_breathing",
         "not_breathing",
@@ -419,7 +444,10 @@ def _should_trigger_grounded_guidance(
     action: str,
     clinical_assessment: ClinicalAssessmentSummary,
     interaction_summary: InteractionSummary,
+    allow_grounding: bool,
 ) -> bool:
+    if not allow_grounding:
+        return False
     if action in {"dispatch_pending_confirmation", "emergency_dispatch"}:
         return True
     if clinical_assessment.response_plan.bystander_actions:
@@ -427,6 +455,22 @@ def _should_trigger_grounded_guidance(
     if interaction_summary.communication_target == "bystander" and clinical_assessment.response_plan.followup_actions:
         return True
     return False
+
+
+def _requires_mandatory_protocol_grounding(
+    *,
+    clinical_assessment: ClinicalAssessmentSummary,
+    allow_grounding: bool,
+) -> bool:
+    """Return whether the response plan activated a protocol that must be grounded.
+
+    This function is intentionally deterministic. The reasoning model may suggest
+    CPR or another protocol through the response plan, but the backend policy is
+    the final authority on whether retrieval is mandatory before communication can
+    present the instructions.
+    """
+
+    return allow_grounding and identify_protocol_candidate(clinical_assessment=clinical_assessment) is not None
 
 
 def _build_non_grounded_guidance(
@@ -513,6 +557,15 @@ def _targeted_followup_for_missing_fact(
     return (None, "general_check", [])
 
 
+def _cap_message_length(text: str, max_words: int = 30) -> str:
+    """Hard cap a message to max_words as a safety net against protocol dumps."""
+
+    words = (text or "").split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]) + "..."
+
+
 def _build_communication_handoff(
     *,
     action: str,
@@ -520,6 +573,7 @@ def _build_communication_handoff(
     clinical_assessment: ClinicalAssessmentSummary,
     response_plan: ResponsePlanSummary,
     guidance: GuidanceSummary,
+    protocol_guidance: ProtocolGuidanceSummary,
 ) -> CommunicationHandoffSummary:
     target = interaction_summary.communication_target
     immediate_step = guidance.steps[0] if guidance.steps else None
@@ -530,73 +584,82 @@ def _build_communication_handoff(
     )
     has_bystander_actions = bool(response_plan.bystander_actions)
     has_notification_actions = bool(response_plan.notification_actions)
+    context_bits: list[str] = []
+    if priority_missing_fact:
+        context_bits.append(f"missing:{priority_missing_fact}")
+    for red_flag in clinical_assessment.red_flags[:3]:
+        context_bits.append(f"red_flag:{red_flag}")
+    for action_item in response_plan.notification_actions[:2]:
+        context_bits.append(f"notification:{action_item.type}")
+    for action_item in response_plan.bystander_actions[:2]:
+        context_bits.append(f"scene_action:{action_item.type}")
+    if action in {"dispatch_pending_confirmation", "emergency_dispatch"}:
+        context_bits.append(f"execution:{action}")
+    if protocol_guidance.protocol_key:
+        context_bits.append(f"protocol:{protocol_guidance.protocol_key}")
+
+    if protocol_guidance.ready_for_communication:
+        return CommunicationHandoffSummary(
+            mode="instruction",
+            priority="execution",
+            immediate_step=protocol_guidance.steps[0] if protocol_guidance.steps else immediate_step,
+            next_focus=protocol_guidance.protocol_key or "guided_action",
+            quick_replies=["Done", "Need next step", "Condition worse"],
+            open_question_key=None,
+            should_surface_execution_update=False,
+            recommended_context_bits=context_bits,
+            rationale=f"Grounded {protocol_guidance.protocol_key} protocol is ready, so communication should present the confirmed protocol guidance.",
+        )
 
     if action == "emergency_dispatch":
-        primary_message = (
-            "Emergency help is on the way. Stay with the patient and keep them still."
-            if target == "bystander"
-            else "Emergency help is on the way. Stay still and focus on slow breaths."
-        )
         return CommunicationHandoffSummary(
             mode="status_update",
             priority="execution",
-            primary_message=primary_message,
             immediate_step=immediate_step,
-            ask_followup=False,
             next_focus="scene_safety",
             quick_replies=["Okay", "Breathing changed", "Condition worse"],
+            open_question_key=None,
+            should_surface_execution_update=True,
+            recommended_context_bits=context_bits,
             rationale="Emergency dispatch is active, so communication should prioritize status and immediate safety guidance.",
         )
 
     if action == "dispatch_pending_confirmation":
-        primary_message = (
-            "Emergency help may be needed. Keep the patient still while I confirm the most urgent detail."
-            if target == "bystander"
-            else "Emergency help may be needed. Stay still while I confirm the most urgent detail."
-        )
         return CommunicationHandoffSummary(
             mode="urgent_instruction",
             priority="execution",
-            primary_message=primary_message,
             immediate_step=immediate_step,
-            ask_followup=bool(question),
-            next_question=question,
             next_focus=next_focus,
             quick_replies=quick_replies,
+            open_question_key=next_focus if question else None,
+            should_surface_execution_update=True,
+            recommended_context_bits=context_bits,
             rationale="Urgent escalation is pending confirmation, so communication should give a safety step and ask only the top missing fact.",
         )
 
     if has_bystander_actions:
-        primary_message = guidance.primary_message or (
-            "Stay with the patient and follow the next safety step."
-            if target == "bystander"
-            else "Follow the next safety step and stay still."
-        )
         return CommunicationHandoffSummary(
             mode="instruction",
             priority="safety",
-            primary_message=primary_message,
             immediate_step=immediate_step,
-            ask_followup=False,
             next_focus="guided_action",
             quick_replies=["Done", "Need next step", "Condition worse"],
+            open_question_key=None,
+            should_surface_execution_update=False,
+            recommended_context_bits=context_bits,
             rationale="Immediate bystander or patient actions are available, so communication should prioritize execution over more triage questions.",
         )
 
     if has_notification_actions and action == "contact_family":
-        primary_message = (
-            "I can update family for support. Stay in a safe position and move slowly."
-            if target == "patient"
-            else "I can update the family for support. Stay with the patient and keep watching them."
-        )
         return CommunicationHandoffSummary(
             mode="status_update",
             priority="reassure",
-            primary_message=primary_message,
             immediate_step=immediate_step,
-            ask_followup=False,
             next_focus="support",
             quick_replies=["Okay", "Pain worse", "Breathing worse"],
+            open_question_key=None,
+            should_surface_execution_update=True,
+            recommended_context_bits=context_bits,
             rationale="Support notifications are the main active track, so communication should reassure and keep the scene stable.",
         )
 
@@ -604,24 +667,221 @@ def _build_communication_handoff(
         return CommunicationHandoffSummary(
             mode="question",
             priority="clarify",
-            primary_message=guidance.primary_message,
             immediate_step=immediate_step,
-            ask_followup=True,
-            next_question=question,
             next_focus=next_focus,
             quick_replies=quick_replies,
+            open_question_key=next_focus,
+            should_surface_execution_update=False,
+            recommended_context_bits=context_bits,
             rationale="A blocking uncertainty remains, so communication should ask one targeted question while keeping current guidance active.",
         )
 
     return CommunicationHandoffSummary(
         mode="instruction" if immediate_step or guidance.primary_message else "reassure",
         priority="safety" if immediate_step else "reassure",
-        primary_message=guidance.primary_message,
         immediate_step=immediate_step,
-        ask_followup=False,
         next_focus="monitoring",
         quick_replies=["Okay", "Pain worse", "Breathing worse"],
+        open_question_key=None,
+        should_surface_execution_update=False,
+        recommended_context_bits=context_bits,
         rationale="Current guidance is sufficient for this turn, so communication should reinforce the plan rather than reopen broad triage questions.",
+    )
+
+
+async def run_reasoning_assessment(
+    event: FallEvent,
+    vitals: VitalSigns | None = None,
+    patient_answers: list[PatientAnswer] | None = None,
+    interaction: InteractionInput | None = None,
+    *,
+    trigger_dispatch: bool = False,
+    background_tasks: Optional[BackgroundTasks] = None,
+) -> FallAssessment:
+    """Run the fast-path reasoning assessment WITHOUT guidance grounding.
+
+    This function owns only the clinical decision pipeline:
+      - Step A: Deterministic clinical policy (no I/O)
+      - Step B: Gemini Pro → ClinicalAssessment (1 call)
+      - Step B' (conditional): Reasoning-support grounding via Vertex AI Search
+        + second Gemini Pro call — only when blocking_uncertainties,
+        contradictions, or high-risk flags are present.
+
+    It does NOT call run_phase2_retrieval, normalize_guidance_from_buckets,
+    build_protocol_guidance_summary, or any guidance-related Vertex AI Search.
+
+    The execution agent is responsible for guidance/protocol grounding and is
+    invoked separately in Phase 2 of the background task.
+    """
+
+    logger.info(
+        "[Reasoning] Starting fast-path assessment | user=%s motion=%s confidence=%.2f answers=%d",
+        event.user_id,
+        event.motion_state,
+        event.confidence_score,
+        len(patient_answers or []),
+    )
+    try:
+        client = get_genai_client()
+    except RuntimeError:
+        client = None
+
+    patient_profile = load_user_profile(event.user_id)
+    answers = patient_answers or []
+    allow_grounding = _has_meaningful_conversation_context(
+        patient_answers=answers,
+        interaction=interaction,
+    )
+    initial_interaction = build_interaction_summary(
+        interaction=interaction,
+        patient_answers=answers,
+        recommended_action=None,
+    )
+
+    # Step A + B: Clinical state assessment (1 Gemini Pro call)
+    vision_assessment, vital_assessment, clinical_assessment = await _run_clinical_state_stage(
+        client=client,
+        event=event,
+        vitals=vitals,
+        patient_profile=patient_profile,
+        patient_answers=answers,
+    )
+    clinical_assessment_summary = _build_clinical_assessment_summary(clinical_assessment)
+    next_action = clinical_assessment.recommended_action
+    reasoning_support_summary = GroundingPassSummary(source="not_requested")
+
+    # Step B' (conditional): Reasoning-support grounding only
+    if _should_trigger_reasoning_support(
+        action=next_action,
+        clinical_assessment=clinical_assessment_summary,
+        allow_grounding=allow_grounding,
+    ):
+        reasoning_support_result = run_reasoning_support_grounding(
+            patient_profile=patient_profile,
+            patient_answers=answers,
+            clinical_assessment=clinical_assessment_summary,
+        )
+        logger.info(
+            "[Reasoning] Support grounding ready | user=%s source=%s intents=%s",
+            event.user_id,
+            reasoning_support_result["source"],
+            ", ".join(reasoning_support_result["selected_intents"][:3]) or "none",
+        )
+        clinical_assessment = await assess_clinical_severity(
+            client=client,
+            event=event,
+            patient_profile=patient_profile,
+            vision_assessment=vision_assessment,
+            vital_assessment=vital_assessment,
+            grounded_medical_guidance=reasoning_support_result["snippets"],
+            patient_answers=answers,
+        )
+        clinical_assessment_summary = _build_clinical_assessment_summary(clinical_assessment)
+        next_action = clinical_assessment.recommended_action
+        reasoning_support_summary = GroundingPassSummary(
+            source=reasoning_support_result["source"],
+            references=reasoning_support_result["references"],
+            preview=reasoning_support_result["snippets"][:3],
+            retrieval_intents=reasoning_support_result["selected_intents"],
+            queries=reasoning_support_result["queries"],
+        )
+
+    interaction_summary = build_interaction_summary(
+        interaction=interaction,
+        patient_answers=answers,
+        recommended_action=next_action,
+    )
+
+    # Build non-grounded guidance (lightweight, no Vertex AI Search)
+    normalized_guidance = _build_non_grounded_guidance(
+        action=next_action,
+        clinical_assessment=clinical_assessment_summary,
+    )
+
+    # Build communication handoff without protocol grounding
+    communication_handoff = _build_communication_handoff(
+        action=next_action,
+        interaction_summary=interaction_summary,
+        clinical_assessment=clinical_assessment_summary,
+        response_plan=clinical_assessment.response_plan,
+        guidance=normalized_guidance,
+        protocol_guidance=ProtocolGuidanceSummary(),
+    )
+
+    assessment = FallAssessment(
+        incident_id=None,
+        status=_status_for_action(next_action),
+        responder_mode=interaction_summary.responder_mode,
+        interaction=interaction_summary,
+        detection=DetectionSummary(
+            motion_state=event.motion_state,
+            fall_detection_confidence_score=event.confidence_score,
+            fall_detection_confidence_band=_confidence_band(event.confidence_score),
+            event_validity=_event_validity(event, vision_assessment),
+        ),
+        clinical_assessment=clinical_assessment_summary,
+        action=ActionSummary(
+            recommended=next_action,
+            requires_confirmation=(next_action == "dispatch_pending_confirmation"),
+            cancel_allowed=(next_action in {"dispatch_pending_confirmation", "emergency_dispatch"}),
+            countdown_seconds=30 if next_action == "dispatch_pending_confirmation" else None,
+        ),
+        response_plan=clinical_assessment.response_plan,
+        guidance=GuidanceSummary(
+            primary_message=normalized_guidance.primary_message,
+            steps=normalized_guidance.steps,
+            warnings=normalized_guidance.warnings,
+            escalation_triggers=normalized_guidance.escalation_triggers,
+        ),
+        protocol_guidance=ProtocolGuidanceSummary(),
+        communication_handoff=communication_handoff,
+        grounding=GroundingSummary(
+            source=reasoning_support_summary.source,
+            reasoning_support=reasoning_support_summary,
+            guidance_support=GroundingPassSummary(source="not_requested"),
+        ),
+        audit=AuditSummary(
+            fallback_used=clinical_assessment.reasoning_summary.startswith(FALLBACK_REASONING_PREFIX),
+            policy_version="reasoning_only+clinical_reasoning_policy_v1",
+            dispatch_triggered=False,
+        ),
+    )
+    logger.info(
+        "[Reasoning] Fast-path assessment complete | user=%s severity=%s action=%s target=%s fallback=%s",
+        event.user_id,
+        assessment.clinical_assessment.severity,
+        assessment.action.recommended,
+        assessment.interaction.communication_target if assessment.interaction else initial_interaction.communication_target,
+        assessment.audit.fallback_used,
+    )
+
+    if not trigger_dispatch or not _should_trigger_dispatch(assessment.action.recommended):
+        return assessment
+
+    incident_id = await trigger_emergency(
+        patient_id=event.user_id,
+        severity=_map_assessment_severity_to_dispatch(assessment.clinical_assessment.severity),
+        vitals=_vitals_to_dispatch_payload(vitals),
+        flags=["fall_detected", f"motion_state:{event.motion_state}"],
+        ai_decision=_build_dispatch_ai_summary(
+            assessment=assessment,
+            patient_answers=answers,
+            patient_profile=patient_profile,
+        ),
+        background_tasks=background_tasks,
+    )
+    logger.info(
+        "[Reasoning] Emergency dispatch triggered | user=%s incident=%s",
+        event.user_id,
+        incident_id,
+    )
+
+    return assessment.model_copy(
+        update={
+            "incident_id": incident_id,
+            "status": "dispatch_confirmed",
+            "audit": assessment.audit.model_copy(update={"dispatch_triggered": True}),
+        }
     )
 
 
@@ -661,6 +921,10 @@ async def run_fall_assessment(
 
     patient_profile = load_user_profile(event.user_id)
     answers = patient_answers or []
+    allow_grounding = _has_meaningful_conversation_context(
+        patient_answers=answers,
+        interaction=interaction,
+    )
     initial_interaction = build_interaction_summary(
         interaction=interaction,
         patient_answers=answers,
@@ -681,6 +945,7 @@ async def run_fall_assessment(
     if _should_trigger_reasoning_support(
         action=next_action,
         clinical_assessment=clinical_assessment_summary,
+        allow_grounding=allow_grounding,
     ):
         reasoning_support_result = run_reasoning_support_grounding(
             patient_profile=patient_profile,
@@ -721,14 +986,23 @@ async def run_fall_assessment(
         action=next_action,
         clinical_assessment=clinical_assessment_summary,
         interaction_summary=interaction_summary,
+        allow_grounding=allow_grounding,
     )
+    requires_protocol_grounding = _requires_mandatory_protocol_grounding(
+        clinical_assessment=clinical_assessment_summary,
+        allow_grounding=allow_grounding,
+    )
+    forced_protocol_intents = collect_required_protocol_intents(
+        clinical_assessment=clinical_assessment_summary,
+    ) if allow_grounding else []
 
-    if should_ground_guidance:
+    if should_ground_guidance or requires_protocol_grounding:
         retrieval_plan, retrieval_result, normalized_guidance = _run_grounded_guidance_stage(
             patient_profile=patient_profile,
             patient_answers=answers,
             clinical_severity=clinical_assessment.severity,
             action=next_action,
+            forced_intents=forced_protocol_intents,
         )
         grounded_medical_guidance = retrieval_result["guidance_snippets"]
         logger.info(
@@ -751,6 +1025,8 @@ async def run_fall_assessment(
         guidance_policy_version = retrieval_plan["policy_version"]
         overall_grounding_source = retrieval_result["retrieval_source"]
     else:
+        retrieval_plan = None
+        retrieval_result = None
         normalized_guidance = _build_non_grounded_guidance(
             action=next_action,
             clinical_assessment=clinical_assessment_summary,
@@ -766,12 +1042,27 @@ async def run_fall_assessment(
         guidance_policy_version = "guidance_skipped"
         overall_grounding_source = reasoning_support_summary.source
 
+    protocol_guidance = build_protocol_guidance_summary(
+        clinical_assessment=clinical_assessment_summary,
+        retrieval_plan=retrieval_plan,
+        retrieval_result=retrieval_result,
+    )
+    if protocol_guidance.grounding_required and not protocol_guidance.ready_for_communication:
+        logger.info(
+            "[Guidance] Protocol blocked | user=%s protocol=%s status=%s rationale=%s",
+            event.user_id,
+            protocol_guidance.protocol_key,
+            protocol_guidance.grounding_status,
+            protocol_guidance.rationale,
+        )
+
     communication_handoff = _build_communication_handoff(
         action=next_action,
         interaction_summary=interaction_summary,
         clinical_assessment=clinical_assessment_summary,
         response_plan=clinical_assessment.response_plan,
         guidance=normalized_guidance,
+        protocol_guidance=protocol_guidance,
     )
 
     assessment = FallAssessment(
@@ -799,6 +1090,7 @@ async def run_fall_assessment(
             warnings=normalized_guidance.warnings,
             escalation_triggers=normalized_guidance.escalation_triggers,
         ),
+        protocol_guidance=protocol_guidance,
         communication_handoff=communication_handoff,
         grounding=GroundingSummary(
             source=overall_grounding_source,

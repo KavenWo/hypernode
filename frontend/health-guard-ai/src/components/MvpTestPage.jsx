@@ -127,22 +127,41 @@ export default function MvpTestPage() {
 
     stream.addEventListener("session_state", (event) => {
       const payload = JSON.parse(event.data);
-      setMessages(payload.conversation_history || []);
+
+      // Merge messages: only append new ones from the backend (e.g., auto-injected
+      // dispatch/family notifications). The local messages list is the source of
+      // truth for the chat window — never replace it wholesale.
+      setMessages((prevMessages) => {
+        const backendHistory = payload.conversation_history || [];
+        if (backendHistory.length <= prevMessages.length) {
+          return prevMessages;
+        }
+        // Append only messages that are new (after the local list's length)
+        const newMessages = backendHistory.slice(prevMessages.length);
+        if (newMessages.length === 0) {
+          return prevMessages;
+        }
+        return [...prevMessages, ...newMessages];
+      });
+
       setLatestAssessment(payload.assessment || null);
+
+      // SSE updates side-panel data only: reasoning status, assessment snapshot,
+      // execution updates. It does NOT overwrite communication_analysis or
+      // assistant_message — those come from the HTTP turn response only.
       setLatestTurn((current) => {
         if (!current) {
           return current;
         }
-        const nextAnalysis = payload.latest_analysis || current.communication_analysis;
         return {
           ...current,
-          interaction: payload.interaction || current.interaction,
-          communication_analysis: nextAnalysis,
           reasoning_status: payload.reasoning_status,
+          reasoning_run_count: payload.reasoning_run_count ?? current.reasoning_run_count ?? 0,
           reasoning_reason: payload.reasoning_reason,
           reasoning_error: payload.reasoning_error,
           assessment: payload.assessment || current.assessment,
           execution_updates: payload.execution_updates || current.execution_updates || [],
+          reasoning_runs: payload.reasoning_runs || current.reasoning_runs || [],
         };
       });
     });
@@ -502,6 +521,7 @@ export default function MvpTestPage() {
               <>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
                   <span className="tag">Reasoning - {latestTurn.reasoning_status}</span>
+                  <span className="tag">Runs - {latestTurn.reasoning_run_count ?? 0}</span>
                   <span className="tag">Target - {latestTurn.interaction?.communication_target}</span>
                 </div>
 
@@ -515,7 +535,7 @@ export default function MvpTestPage() {
                 <div className="form-group">
                   <label className="form-label">Reasoning Refresh</label>
                   <div style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 12, fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
-                    {latestTurn.interaction?.reasoning_refresh?.required ? "required" : "not required"} [{latestTurn.interaction?.reasoning_refresh?.priority}] - {latestTurn.reasoning_reason || latestTurn.interaction?.reasoning_refresh?.reason}
+                    {latestTurn.interaction?.reasoning_refresh?.required ? "required" : "not required"} - {latestTurn.reasoning_reason || latestTurn.interaction?.reasoning_refresh?.reason}
                   </div>
                 </div>
 

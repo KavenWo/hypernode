@@ -24,7 +24,7 @@ def _interaction(target: str) -> InteractionSummary:
         guidance_style="patient_calm_direct",
         interaction_mode="patient_first_check",
         rationale="test",
-        reasoning_refresh=ReasoningRefreshSummary(required=False, reason="test", priority="low"),
+    reasoning_refresh=ReasoningRefreshSummary(required=False, reason="test"),
     )
 
 
@@ -46,6 +46,7 @@ def test_grounded_guidance_triggers_for_urgent_actions() -> None:
         action="dispatch_pending_confirmation",
         clinical_assessment=clinical,
         interaction_summary=_interaction("patient"),
+        allow_grounding=True,
     )
 
 
@@ -62,6 +63,7 @@ def test_grounded_guidance_triggers_for_bystander_execution() -> None:
         action="monitor",
         clinical_assessment=clinical,
         interaction_summary=_interaction("bystander"),
+        allow_grounding=True,
     )
 
 
@@ -78,4 +80,5 @@ def test_grounded_guidance_skips_for_low_risk_patient_monitoring() -> None:
         action="monitor",
         clinical_assessment=clinical,
         interaction_summary=_interaction("patient"),
+        allow_grounding=True,
     )

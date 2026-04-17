@@ -63,3 +63,33 @@ def test_builds_bucket_queries_for_mixed_case() -> None:
 
     assert "cpr_or_airway_steps" in plan["queries_by_bucket"]
     assert "red_flags_and_escalation" in plan["queries_by_bucket"]
+
+
+def test_forced_protocol_intents_are_preserved_in_retrieval_plan() -> None:
+    profile = UserMedicalProfile(user_id="u5", age=70)
+    answers = [PatientAnswer(question_id="status", answer="The patient seems okay but we are waiting with them.")]
+
+    plan = build_phase2_retrieval_plan(
+        patient_profile=profile,
+        patient_answers=answers,
+        severity_hint="medium",
+        forced_intents=["waiting_for_help", "bystander_check_consciousness"],
+    )
+
+    assert "waiting_for_help" in plan["selected_intents"]
+    assert "bystander_check_consciousness" in plan["selected_intents"]
+
+
+def test_forced_protocol_intents_build_bucket_queries() -> None:
+    profile = UserMedicalProfile(user_id="u6", age=70)
+    answers = [PatientAnswer(question_id="status", answer="We are waiting for the ambulance.")]
+
+    plan = build_phase2_bucket_query_plan(
+        patient_profile=profile,
+        patient_answers=answers,
+        severity_hint="critical",
+        forced_intents=["waiting_for_help"],
+    )
+
+    assert "monitoring_and_followup" in plan["queries_by_bucket"]
+    assert "scene_safety" in plan["queries_by_bucket"]

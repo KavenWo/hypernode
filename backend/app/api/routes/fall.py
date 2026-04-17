@@ -13,7 +13,9 @@ from fastapi.responses import StreamingResponse
 
 from app.fall.assessment_service import build_fall_questions, get_runtime_status, run_fall_assessment
 from app.fall.conversation_service import (
+    apply_session_action_decision,
     get_fall_conversation_session_state,
+    reset_fall_conversation_session,
     run_fall_conversation_turn,
 )
 from app.fall.contracts import (
@@ -24,6 +26,8 @@ from app.fall.contracts import (
     FallAssessmentRequest,
     FallEvent,
     FallQuestionsRequest,
+    SessionActionRequest,
+    SessionActionResponse,
     TriageQuestionSet,
 )
 from db.firebase_client import list_sample_patient_profiles
@@ -101,6 +105,34 @@ async def get_session_state(session_id: str) -> CommunicationSessionStateRespons
     if session_state is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return session_state
+
+
+@router.post("/session-reset/{session_id}")
+async def reset_session_state(session_id: str) -> dict:
+    """Immediately stop active backend work for a session and clear its state."""
+    reset_result = reset_fall_conversation_session(session_id)
+    if not reset_result["reset"]:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return reset_result
+
+
+@router.post("/session-action/{session_id}", response_model=SessionActionResponse)
+async def control_session_action(
+    session_id: str,
+    request: SessionActionRequest,
+) -> SessionActionResponse:
+    """Apply an explicit user control decision to a session action track."""
+    try:
+        response = await apply_session_action_decision(
+            session_id,
+            action_type=request.action_type,
+            decision=request.decision,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if response is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return response
 
 
 @router.get("/session-events/{session_id}")

@@ -121,12 +121,19 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
 
   const [sidebarWidth, setSidebarWidth] = useState(500);
   const isResizing = useRef(false);
+  const activeRequestControllerRef = useRef(null);
+  const streamRef = useRef(null);
+  const sessionIdRef = useRef("");
 
   const profile = DEMO_PROFILES[profileIdx];
   const baseVitals = getVitalsPreset(profile.userId, vitalsMode);
   const [vitals, setVitals] = useState(() => createVitalsState(baseVitals));
 
   const lastHistoryKeyRef = useRef("");
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   useEffect(() => {
     function handleMouseMove(e) {
@@ -151,15 +158,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
   useEffect(() => {
     setVitals(createVitalsState(baseVitals));
     setMotionState(vitalsMode === "abnormal" ? "rapid_descent" : "stumble");
-    setInteraction(DEFAULT_INTERACTION);
-    setSessionId("");
-    setMessages([]);
-    setLatestAssessment(null);
-    setLatestTurn(null);
-    setDraftMessage("");
-    setError("");
-    setStreamStatus("idle");
-    setPhase("idle");
+    resetConversationState();
   }, [baseVitals, profile.userId, vitalsMode]);
 
   useEffect(() => {
@@ -219,6 +218,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
     }
 
     const stream = new EventSource(`${API_BASE_URL}/api/v1/events/fall/session-events/${sessionId}`);
+    streamRef.current = stream;
     setStreamStatus("connecting");
 
     stream.onopen = () => {
@@ -227,22 +227,43 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
 
     stream.addEventListener("session_state", (event) => {
       const payload = JSON.parse(event.data);
-      setMessages(payload.conversation_history || []);
+      
+      setMessages((currentMessages) => {
+        const newHistory = payload.conversation_history || [];
+        // If we are currently sending a message, don't let a stale SSE history 
+        // (one that hasn't recorded our new message yet) wipe it out.
+        if (newHistory.length < currentMessages.length) {
+          return currentMessages;
+        }
+        return newHistory;
+      });
       setLatestAssessment(payload.assessment || null);
       setLatestTurn((current) => {
         if (!current) {
           return current;
         }
         const nextAnalysis = payload.latest_analysis || current.communication_analysis;
+        const nextAssistantMessage =
+          nextAnalysis?.followup_text ||
+          payload.conversation_history?.filter((message) => message.role === "assistant").at(-1)?.text ||
+          current.assistant_message;
+        const nextGuidanceSteps = nextAnalysis?.immediate_step
+          ? [nextAnalysis.immediate_step]
+          : current.guidance_steps || [];
         return {
           ...current,
           interaction: payload.interaction || current.interaction,
           communication_analysis: nextAnalysis,
           reasoning_status: payload.reasoning_status,
+          reasoning_run_count: payload.reasoning_run_count ?? current.reasoning_run_count ?? 0,
           reasoning_reason: payload.reasoning_reason,
           reasoning_error: payload.reasoning_error,
           assessment: payload.assessment || current.assessment,
+          assistant_message: nextAssistantMessage,
+          guidance_steps: nextGuidanceSteps,
+          quick_replies: nextAnalysis?.quick_replies || current.quick_replies || [],
           execution_updates: payload.execution_updates || current.execution_updates || [],
+          action_states: payload.action_states || current.action_states || [],
         };
       });
     });
@@ -250,10 +271,16 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
     stream.onerror = () => {
       setStreamStatus("disconnected");
       stream.close();
+      if (streamRef.current === stream) {
+        streamRef.current = null;
+      }
     };
 
     return () => {
       stream.close();
+      if (streamRef.current === stream) {
+        streamRef.current = null;
+      }
       setStreamStatus("idle");
     };
   }, [sessionId]);
@@ -276,7 +303,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
     setHistoryLog((current) => [buildHistoryEntry(profile.name, latestAssessment, executionUpdate), ...current]);
   }, [latestAssessment, latestTurn, profile.name, sessionId, setHistoryLog]);
 
-  function resetConversation() {
+  function resetConversationState() {
     setInteraction(DEFAULT_INTERACTION);
     setSessionId("");
     setMessages([]);
@@ -288,7 +315,41 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
     setPhase("idle");
   }
 
+  function abortActiveRequest() {
+    if (activeRequestControllerRef.current) {
+      activeRequestControllerRef.current.abort();
+      activeRequestControllerRef.current = null;
+    }
+  }
+
+  async function resetConversation() {
+    const activeSessionId = sessionIdRef.current;
+
+    abortActiveRequest();
+    if (streamRef.current) {
+      streamRef.current.close();
+      streamRef.current = null;
+    }
+
+    resetConversationState();
+
+    if (!activeSessionId) {
+      return;
+    }
+
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/events/fall/session-reset/${activeSessionId}`, {
+        method: "POST",
+      });
+    } catch {
+      // The UI still resets locally even if the backend is already gone.
+    }
+  }
+
   async function startSession() {
+    abortActiveRequest();
+    const controller = new AbortController();
+    activeRequestControllerRef.current = controller;
     setPhase("starting");
     setError("");
 
@@ -298,6 +359,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
       const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-turn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           event: {
             user_id: profile.userId,
@@ -331,8 +393,16 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
       setMessages(payload.transcript_append || []);
       setPhase("session_ready");
     } catch (requestError) {
+      if (requestError.name === "AbortError") {
+        setPhase("idle");
+        return;
+      }
       setError(requestError.message || "Unable to start the session.");
       setPhase("error");
+    } finally {
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null;
+      }
     }
   }
 
@@ -341,13 +411,23 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
       return;
     }
 
+    abortActiveRequest();
+    const controller = new AbortController();
+    activeRequestControllerRef.current = controller;
     const messageText = draftMessage.trim();
     setDraftMessage("");
     setPhase("sending");
     setError("");
 
     const responderRole = latestTurn?.interaction?.communication_target || "patient";
-    const userMessage = { role: responderRole, text: messageText };
+    const optimisticVersion = (latestTurn?.reasoning_run_count ?? 0) + 1;
+    const userMessage = {
+      role: responderRole,
+      text: messageText,
+      reasoning_input_version: optimisticVersion,
+      comm_reasoning_required: null,
+      comm_reasoning_reason: "Waiting for communication analysis...",
+    };
     const nextHistory = [...messages, userMessage];
 
     // Optimistically show user message
@@ -359,6 +439,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
       const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-turn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           event: {
             user_id: profile.userId,
@@ -389,11 +470,81 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
       setSessionId(payload.session_id);
       setLatestTurn(payload);
       setLatestAssessment(payload.assessment || latestAssessment);
-      setMessages([...nextHistory, ...(payload.transcript_append || [])]);
+      
+      // Update messages with the real response from the backend
+      const serverAppended = payload.transcript_append || [];
+      setMessages((current) => {
+        // Find if userMessage is already in current (it should be)
+        // Then append what server said.
+        // We use a functional update to be safe.
+        return [...nextHistory, ...serverAppended];
+      });
       setPhase("session_ready");
     } catch (requestError) {
+      if (requestError.name === "AbortError") {
+        setPhase("idle");
+        return;
+      }
       setError(requestError.message || "Unable to send the turn.");
       setPhase("error");
+    } finally {
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null;
+      }
+    }
+  }
+
+  async function controlAction(actionType, decision) {
+    if (!sessionId) {
+      return;
+    }
+
+    abortActiveRequest();
+    const controller = new AbortController();
+    activeRequestControllerRef.current = controller;
+    setError("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-action/${sessionId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          action_type: actionType,
+          decision,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Action control failed (${response.status})`);
+      }
+
+      const payload = await response.json();
+      setLatestTurn((current) => {
+        if (!current) {
+          return current;
+        }
+        const nextActionStates = (current.action_states || []).map((state) =>
+          state.action_type === payload.action_state.action_type ? payload.action_state : state,
+        );
+        if (!nextActionStates.some((state) => state.action_type === payload.action_state.action_type)) {
+          nextActionStates.push(payload.action_state);
+        }
+        return {
+          ...current,
+          action_states: nextActionStates,
+          execution_updates: payload.execution_updates || current.execution_updates || [],
+        };
+      });
+    } catch (requestError) {
+      if (requestError.name === "AbortError") {
+        return;
+      }
+      setError(requestError.message || "Unable to control the session action.");
+    } finally {
+      if (activeRequestControllerRef.current === controller) {
+        activeRequestControllerRef.current = null;
+      }
     }
   }
 
@@ -435,6 +586,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
               <DashboardActionCard
                 latestAssessment={latestAssessment}
                 latestTurn={latestTurn}
+                onActionDecision={controlAction}
               />
             </div>
             <DashboardSessionStateCard
@@ -444,6 +596,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
               latestAssessment={latestAssessment}
               error={error}
               historyCount={historyLog.length}
+              phase={phase}
             />
           </div>
         </div>

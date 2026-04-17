@@ -60,8 +60,12 @@ export default function DashboardSessionControlCard({
         >
           {phase === "starting" ? "Starting..." : "Start Session"}
         </button>
-        <button className="btn btn-ghost" onClick={resetConversation}>
-          Reset
+        <button
+          className="btn btn-ghost"
+          onClick={resetConversation}
+          title="Stops the active backend session and clears the current dashboard conversation."
+        >
+          Reset Session
         </button>
       </div>
     </div>

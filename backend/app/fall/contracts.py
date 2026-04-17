@@ -6,6 +6,7 @@ does not need to keep importing contracts from an ``agents`` package forever.
 """
 
 from agents.shared.schemas import (
+    ActionStateSummary,
     ActionSummary,
     AuditSummary,
     ClinicalAssessment,
@@ -20,6 +21,7 @@ from agents.shared.schemas import (
     DispatchDecision,
     EscalationActionSummary,
     ExecutionUpdate,
+    ExecutionPlan,
     FallAssessmentRequest,
     FallEvent,
     FallQuestionsRequest,
@@ -30,10 +32,14 @@ from agents.shared.schemas import (
     InteractionSummary,
     FallAssessment,
     PatientAnswer,
+    ProtocolGuidanceSummary,
+    ReasoningRunSummary,
     ReasoningRefreshSummary,
     ReasoningTraceSummary,
     ResponseActionItem,
     ResponsePlanSummary,
+    SessionActionRequest,
+    SessionActionResponse,
     TriageQuestion,
     TriageQuestionSet,
     UserMedicalProfile,
@@ -43,6 +49,7 @@ from agents.shared.schemas import (
 )
 
 __all__ = [
+    "ActionStateSummary",
     "ActionSummary",
     "AuditSummary",
     "ClinicalAssessment",
@@ -57,6 +64,7 @@ __all__ = [
     "DispatchDecision",
     "EscalationActionSummary",
     "ExecutionUpdate",
+    "ExecutionPlan",
     "FallAssessment",
     "FallAssessmentRequest",
     "FallEvent",
@@ -67,10 +75,14 @@ __all__ = [
     "InteractionInput",
     "InteractionSummary",
     "PatientAnswer",
+    "ProtocolGuidanceSummary",
+    "ReasoningRunSummary",
     "ReasoningRefreshSummary",
     "ReasoningTraceSummary",
     "ResponseActionItem",
     "ResponsePlanSummary",
+    "SessionActionRequest",
+    "SessionActionResponse",
     "TriageQuestion",
     "TriageQuestionSet",
     "UserMedicalProfile",

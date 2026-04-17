@@ -85,6 +85,13 @@
         "how to check if person is responsive after fall"
       ]
     },
+    "waiting_for_help": {
+      "priority": 3,
+      "queries": [
+        "waiting for emergency help after collapse bystander what to do",
+        "stay with patient while waiting for ambulance first aid"
+      ]
+    },
     "fall_red_flags": {
       "priority": 4,
       "queries": [

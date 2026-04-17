@@ -3,7 +3,7 @@ export const DEMO_PROFILES = [
     id: 1,
     userId: "user_healthy_001",
     name: "Daniel Tan",
-    age: 34,
+    age: 74,
     bloodType: "O+",
     gender: "Male",
     avatar: "🙂",

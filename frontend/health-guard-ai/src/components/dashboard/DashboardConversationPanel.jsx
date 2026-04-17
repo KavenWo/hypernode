@@ -1,5 +1,9 @@
-function ChatBubble({ role, text }) {
+import { useEffect, useRef } from "react";
+
+function ChatBubble({ message }) {
+  const { role, text, reasoning_input_version, comm_reasoning_required, comm_reasoning_reason, session_version } = message;
   const isAssistant = role === "assistant";
+  const showCommDecision = role !== "assistant" && comm_reasoning_required !== null && comm_reasoning_required !== undefined;
 
   return (
     <div style={{ display: "flex", justifyContent: isAssistant ? "flex-start" : "flex-end" }}>
@@ -14,7 +18,21 @@ function ChatBubble({ role, text }) {
         <div className="dashboard-chat-role">
           {isAssistant ? "Communication Agent" : role}
         </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {reasoning_input_version != null && <span className="tag">V{reasoning_input_version}</span>}
+          {session_version != null && <span className="tag">S{session_version}</span>}
+          {showCommDecision && (
+            <span className={`tag ${comm_reasoning_required ? "tag-red" : ""}`}>
+              Rerun {comm_reasoning_required ? "Yes" : "No"}
+            </span>
+          )}
+        </div>
         <div style={{ fontSize: 14, color: "var(--text)", lineHeight: 1.6 }}>{text}</div>
+        {showCommDecision && comm_reasoning_reason && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+            Comm decision: {comm_reasoning_reason}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -48,6 +66,11 @@ export default function DashboardConversationPanel({
   sendTurn,
 }) {
   const isAgentTyping = phase === "starting" || phase === "sending";
+  const streamEndRef = useRef(null);
+
+  useEffect(() => {
+    streamEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isAgentTyping]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, padding: "24px", overflow: "hidden" }}>
@@ -74,9 +97,10 @@ export default function DashboardConversationPanel({
 
       <div className="dashboard-chat-stream">
         {messages.map((message, index) => (
-          <ChatBubble key={`${message.role}-${index}`} role={message.role} text={message.text} />
+          <ChatBubble key={`${message.role}-${message.session_version ?? "na"}-${index}`} message={message} />
         ))}
         {isAgentTyping && <TypingBubble />}
+        <div ref={streamEndRef} />
       </div>
 
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>

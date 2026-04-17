@@ -290,6 +290,8 @@ def run_clinical_reasoning_policy(
     head_strike_on_blood_thinners = {"head_strike", "blood_thinner_use"} <= set(signals.red_flags)
     if immediate_present or head_strike_on_blood_thinners:
         severity = "critical"
+    elif score >= 5:
+        severity = "critical"
     elif score >= 3:
         severity = "medium"
     else:
@@ -407,7 +409,9 @@ def _build_response_plan(
     if "not_breathing" in signals.red_flags:
         bystander_actions.append(ResponseActionItem(type="start_cpr_guidance", priority="immediate", reason="Breathing has stopped."))
         bystander_actions.append(ResponseActionItem(type="retrieve_aed_if_available", priority="immediate", reason="AED support may be needed during resuscitation."))
-    elif "abnormal_breathing" in signals.red_flags or "breathing_status_unconfirmed" in signals.missing_facts:
+    elif "abnormal_breathing" in signals.red_flags or (
+        "breathing_status_unconfirmed" in signals.missing_facts and severity == "critical"
+    ):
         bystander_actions.append(ResponseActionItem(type="check_breathing", priority="immediate", reason="Breathing status is dangerous or unclear."))
 
     if "severe_bleeding" in signals.red_flags:
@@ -423,7 +427,7 @@ def _build_response_plan(
     if action in {"emergency_dispatch", "dispatch_pending_confirmation"}:
         followup_actions.append(ResponseActionItem(type="wait_for_responders", priority="ongoing", reason="Emergency escalation is active or likely."))
         followup_actions.append(ResponseActionItem(type="stay_on_scene", priority="ongoing", reason="A nearby helper should remain with the patient if safe."))
-    if severity in {"low", "medium"}:
+    if severity in {"low", "medium", "critical"}:
         followup_actions.append(ResponseActionItem(type="monitor_for_worsening_signs", priority="ongoing", reason="The situation should be watched for deterioration."))
     if signals.priority_missing_fact:
         followup_actions.append(ResponseActionItem(type="continue_reassessment", priority="ongoing", reason=f"Reassess until {signals.priority_missing_fact} is clarified."))
