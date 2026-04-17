@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Optional
 from uuid import uuid4
 
+import httpx  # type: ignore
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query  # type: ignore
 from pydantic import BaseModel, Field  # type: ignore
 
@@ -131,6 +132,21 @@ class ExecuteActionRequest(BaseModel):
     action: str | None = None
 
 
+class SmsRequest(BaseModel):
+    to: str
+    message: str
+    incident_id: str | None = None
+
+
+class SmsResult(BaseModel):
+    to: str
+    status: str
+    provider: str = "simulation"
+    simulated: bool = True
+    message_id: str | None = None
+    error: str | None = None
+
+
 class HistoryEntry(BaseModel):
     history_id: str
     incident_id: str
@@ -164,6 +180,8 @@ class Incident(BaseModel):
 
     twilio_call_sids: list[str] = Field(default_factory=list)
     twilio_status: str = "pending"
+    sms_results: list[dict] = Field(default_factory=list)
+    sms_status: str = "pending"
     nearest_hospitals: list[dict] = Field(default_factory=list)
     selected_hospital: Optional[dict] = None
     hospital_eta_minutes: Optional[float] = None
@@ -279,7 +297,7 @@ def _load_patient_profile(patient_id: str, session_uid: str | None = None) -> Pa
 def _update_patient_profile(patient_id: str, updates: dict) -> PatientProfile:
     profile = _load_patient_profile(patient_id, updates.get("session_uid"))
     clean_updates = {key: value for key, value in updates.items() if value is not None}
-    updated = profile.model_copy(update=clean_updates)
+    updated = PatientProfile.model_validate({**profile.model_dump(), **clean_updates})
     return _save_patient_profile(updated)
 
 
@@ -338,6 +356,103 @@ def _normalize_action(action: str | None) -> str:
         "ambulance": "call_ambulance",
     }
     return aliases.get(normalized, normalized)
+
+
+def _sms_credentials() -> dict:
+    return {
+        "account_sid": os.getenv("TWILIO_ACCOUNT_SID", ""),
+        "auth_token": os.getenv("TWILIO_AUTH_TOKEN", ""),
+        "from_number": os.getenv("TWILIO_FROM_NUMBER", ""),
+    }
+
+
+def _sms_configured() -> bool:
+    credentials = _sms_credentials()
+    return all(credentials.values())
+
+
+async def _send_sms(to: str, message: str, incident_id: str | None = None) -> SmsResult:
+    """Send SMS through Twilio when configured, otherwise simulate safely."""
+    if not to:
+        return SmsResult(to=to, status="skipped", error="Missing recipient phone number")
+
+    credentials = _sms_credentials()
+    if not _sms_configured():
+        return SmsResult(
+            to=to,
+            status="simulated",
+            provider="simulation",
+            simulated=True,
+            message_id=f"SIM-{uuid4().hex[:12].upper()}",
+        )
+
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{credentials['account_sid']}/Messages.json"
+    data = {
+        "From": credentials["from_number"],
+        "To": to,
+        "Body": message,
+    }
+    if incident_id:
+        data["StatusCallback"] = os.getenv("TWILIO_STATUS_CALLBACK_URL", "")
+        data = {key: value for key, value in data.items() if value}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                url,
+                data=data,
+                auth=(credentials["account_sid"], credentials["auth_token"]),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        return SmsResult(
+            to=to,
+            status=payload.get("status", "queued"),
+            provider="twilio",
+            simulated=False,
+            message_id=payload.get("sid"),
+        )
+    except Exception as exc:
+        return SmsResult(
+            to=to,
+            status="error",
+            provider="twilio",
+            simulated=False,
+            error=str(exc),
+        )
+
+
+def _sms_message_for_incident(incident: Incident, action: str | None = None) -> str:
+    action_text = action or incident.final_action or "monitor"
+    return (
+        f"Hypernode alert: {incident.event_type} incident {incident.incident_id} "
+        f"for patient {incident.patient_id}. Severity: {incident.severity.value}. "
+        f"Action: {action_text}."
+    )
+
+
+async def _send_sms_to_patient_contacts(
+    incident: Incident,
+    message: str | None = None,
+) -> list[SmsResult]:
+    profile = _load_patient_profile(incident.patient_id, incident.session_uid)
+    contacts = sorted(profile.emergency_contacts, key=lambda contact: contact.priority)
+    sms_message = message or _sms_message_for_incident(incident)
+    return await asyncio.gather(
+        *[_send_sms(contact.phone, sms_message, incident.incident_id) for contact in contacts]
+    )
+
+
+async def _dispatch_sms_notifications(incident: Incident) -> dict:
+    results = await _send_sms_to_patient_contacts(incident)
+    result_payload = [result.model_dump(mode="json") for result in results]
+    failed = [result for result in results if result.status == "error"]
+    return {
+        "status": "partial_error" if failed else "sent",
+        "provider": "twilio" if any(not result.simulated for result in results) else "simulation",
+        "results": result_payload,
+        "count": len(result_payload),
+    }
 
 
 def _history_summary(incident: Incident) -> str:
@@ -499,14 +614,17 @@ async def _run_dispatch(incident_id: str) -> None:
         _save_incident(incident)
 
         incident.dispatch_started_at = datetime.utcnow()
-        twilio_result, maps_result, location_result = await asyncio.gather(
+        twilio_result, sms_result, maps_result, location_result = await asyncio.gather(
             _dispatch_twilio(incident),
+            _dispatch_sms_notifications(incident),
             _dispatch_maps(incident),
             _confirm_location(incident),
         )
 
         incident.twilio_call_sids = twilio_result.get("call_sids", [])
         incident.twilio_status = twilio_result.get("status", "unknown")
+        incident.sms_results = sms_result.get("results", [])
+        incident.sms_status = sms_result.get("status", "unknown")
         incident.nearest_hospitals = maps_result.get("hospitals", [])
         incident.selected_hospital = maps_result.get("selected")
         incident.hospital_eta_minutes = maps_result.get("eta_minutes")
@@ -527,6 +645,8 @@ async def _run_dispatch(incident_id: str) -> None:
             "executed": True,
             "message": "Emergency dispatch simulation completed.",
             "twilio_status": incident.twilio_status,
+            "sms_status": incident.sms_status,
+            "sms_results": incident.sms_results,
             "hospital": incident.selected_hospital.get("name") if incident.selected_hospital else None,
         }
         incident.execution_locked = True
@@ -661,7 +781,7 @@ def _create_lifecycle_incident(request: StartIncidentRequest) -> Incident:
     return _save_incident(incident)
 
 
-def _simulate_action(action: str, incident: Incident) -> dict:
+async def _simulate_action(action: str, incident: Incident) -> dict:
     if action == "monitor":
         return {
             "action": action,
@@ -670,19 +790,32 @@ def _simulate_action(action: str, incident: Incident) -> dict:
         }
     if action == "call_family":
         profile = _load_patient_profile(incident.patient_id, incident.session_uid)
-        contacts = [contact.model_dump(mode="json") for contact in profile.emergency_contacts]
+        contacts = [
+            contact.model_dump(mode="json") if isinstance(contact, EmergencyContact) else contact
+            for contact in profile.emergency_contacts
+        ]
+        sms_results = await _send_sms_to_patient_contacts(
+            incident,
+            _sms_message_for_incident(incident, action),
+        )
         return {
             "action": action,
             "executed": True,
             "message": "Simulated family notification sent.",
             "contacts": contacts,
+            "sms_results": [result.model_dump(mode="json") for result in sms_results],
         }
     if action == "call_ambulance":
+        sms_results = await _send_sms_to_patient_contacts(
+            incident,
+            _sms_message_for_incident(incident, action),
+        )
         return {
             "action": action,
             "executed": True,
             "message": f"Simulated ambulance call created for incident {incident.incident_id}.",
             "emergency_number": "999",
+            "sms_results": [result.model_dump(mode="json") for result in sms_results],
         }
     return {
         "action": action,
@@ -790,7 +923,9 @@ async def execute_incident_action(
 
     action = _normalize_action(request.action or incident.final_action)
     incident.final_action = action
-    incident.action_taken = _simulate_action(action, incident)
+    incident.action_taken = await _simulate_action(action, incident)
+    incident.sms_results = incident.action_taken.get("sms_results", [])
+    incident.sms_status = "sent" if incident.sms_results else incident.sms_status
     incident.execution_locked = True
     incident.execution_count += 1
     incident.status = IncidentStatus.MONITORING if action == "monitor" else IncidentStatus.ACTION_TAKEN
@@ -798,6 +933,16 @@ async def execute_incident_action(
     if not incident.history_logged:
         _append_history(incident)
     return incident
+
+
+@api_router.post("/sms/send", response_model=SmsResult)
+async def send_sms_message(request: SmsRequest) -> SmsResult:
+    """Send or simulate a single SMS message."""
+    return await _send_sms(
+        to=request.to,
+        message=request.message,
+        incident_id=request.incident_id,
+    )
 
 
 @api_router.get("/history", response_model=list[HistoryEntry])
