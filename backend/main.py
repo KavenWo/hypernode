@@ -3,7 +3,8 @@
 from fastapi import FastAPI  # type: ignore
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore
 
-from emergency import api_router, router as emergency_router
+from app.api.routes.patient_data import router as api_router
+from emergency import router as emergency_router
 from vitals import router as vitals_router
 
 
