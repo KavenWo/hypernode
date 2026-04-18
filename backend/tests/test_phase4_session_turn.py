@@ -318,6 +318,8 @@ async def test_phase4_session_turn_loop() -> None:
                 else:
                     assert "family" in family_turn.assistant_message.lower(), family_turn
 
+
+def test_pending_dispatch_language_guardrail_avoids_claiming_help_is_already_on_the_way() -> None:
     guarded = _apply_assessment_language_guardrails(
         analysis=CommunicationAgentAnalysis(
             followup_text="Help is on the way. Stay with him.",
@@ -338,7 +340,6 @@ async def test_phase4_session_turn_loop() -> None:
     )
     assert "help is on the way" not in guarded.followup_text.lower(), guarded
     assert "may need" in guarded.followup_text.lower() or "being prepared" in guarded.followup_text.lower(), guarded
-    assert session_state.execution_updates == [] or isinstance(session_state.execution_updates, list), session_state
 
 
 def test_execution_announcement_is_only_used_once() -> None:

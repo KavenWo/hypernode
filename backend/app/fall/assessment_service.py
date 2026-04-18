@@ -27,7 +27,7 @@ from agents.communication.interaction_policy import (
 )
 from agents.reasoning.support_grounding import run_reasoning_support_grounding
 from agents.shared.config import get_genai_client
-from app.fall.agent_runtime import get_agent_backend, get_fall_agent_runtime
+from app.fall.agent_runtime import get_agent_backend, get_fall_agent_runtime, role_uses_shared_genai_client
 from app.fall.contracts import (
     ActionSummary,
     AuditSummary,
@@ -730,10 +730,12 @@ async def run_reasoning_assessment(
         event.confidence_score,
         len(patient_answers or []),
     )
-    try:
-        client = get_genai_client()
-    except RuntimeError:
-        client = None
+    client = None
+    if role_uses_shared_genai_client("reasoning"):
+        try:
+            client = get_genai_client()
+        except RuntimeError:
+            client = None
 
     patient_profile = load_user_profile(event.user_id)
     answers = patient_answers or []
@@ -923,10 +925,12 @@ async def run_fall_assessment(
         event.confidence_score,
         len(patient_answers or []),
     )
-    try:
-        client = get_genai_client()
-    except RuntimeError:
-        client = None
+    client = None
+    if role_uses_shared_genai_client("reasoning"):
+        try:
+            client = get_genai_client()
+        except RuntimeError:
+            client = None
 
     patient_profile = load_user_profile(event.user_id)
     answers = patient_answers or []

@@ -65,7 +65,8 @@ export default function DashboardConversationPanel({
   phase,
   sendTurn,
 }) {
-  const isAgentTyping = phase === "starting" || phase === "sending";
+  const hasAssistantMessage = messages.some((message) => message.role === "assistant" && message.text?.trim());
+  const isAgentTyping = phase === "sending" || (phase === "starting" && !hasAssistantMessage);
   const streamEndRef = useRef(null);
 
   useEffect(() => {

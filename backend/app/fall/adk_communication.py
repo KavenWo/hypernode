@@ -27,7 +27,7 @@ from app.fall.action_runtime_service import build_visible_execution_state_summar
 
 logger = logging.getLogger(__name__)
 
-ADK_COMMUNICATION_MODEL = os.getenv("ADK_COMMUNICATION_MODEL", "gemini-2.5-flash")
+ADK_COMMUNICATION_MODEL = os.getenv("ADK_COMMUNICATION_MODEL", "gemini-3-flash-preview")
 ADK_COMMUNICATION_APP_NAME = "fall-communication-adk"
 
 COMMUNICATION_AGENT_INSTRUCTION = """
@@ -195,6 +195,49 @@ def _summarize_reasoning_handoff(assessment: FallAssessment | None) -> str:
 
 def _normalize_analysis_payload(payload: dict) -> dict:
     normalized = dict(payload)
+
+    def _normalize_string_list(value) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        if isinstance(value, dict):
+            normalized_items: list[str] = []
+            for key, item_value in value.items():
+                key_text = str(key).strip()
+                if not key_text:
+                    continue
+                if isinstance(item_value, bool):
+                    if item_value:
+                        normalized_items.append(key_text)
+                elif item_value is None:
+                    continue
+                elif isinstance(item_value, str):
+                    if item_value.strip().lower() not in {"", "false", "no", "none", "0"}:
+                        normalized_items.append(key_text)
+                else:
+                    normalized_items.append(key_text)
+            return normalized_items
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value).strip()
+        return [text] if text else []
+
+    def _normalize_bool(value, *, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "yes", "1", "on"}:
+                return True
+            if lowered in {"false", "no", "0", "off", ""}:
+                return False
+        return default
+
     list_fields = {
         "extracted_facts",
         "resolved_fact_keys",
@@ -202,11 +245,18 @@ def _normalize_analysis_payload(payload: dict) -> dict:
     }
 
     for field in list_fields:
-        value = normalized.get(field)
-        if value is None:
-            normalized[field] = []
-        elif isinstance(value, str):
-            normalized[field] = [value] if value.strip() else []
+        normalized[field] = _normalize_string_list(normalized.get(field))
+
+    bool_fields = {
+        "patient_responded": False,
+        "bystander_present": False,
+        "bystander_can_help": False,
+        "open_question_resolved": False,
+        "reasoning_needed": False,
+        "should_surface_execution_update": False,
+    }
+    for field, default in bool_fields.items():
+        normalized[field] = _normalize_bool(normalized.get(field), default=default)
 
     if normalized.get("open_question_key") == "none":
         normalized["open_question_key"] = None
@@ -291,6 +341,18 @@ async def analyze_communication_turn_with_adk(
     acknowledged_reasoning_triggers: set[str] | None = None,
 ) -> CommunicationAgentAnalysis:
     """Run the ADK-backed communication analysis with heuristic fallback."""
+
+    if not (latest_message or "").strip():
+        logger.info(
+            "[AdkCommunication] Empty bootstrap turn detected; using deterministic opening prompt."
+        )
+        return _heuristic_analysis(
+            latest_message="",
+            previous_assessment=previous_assessment,
+            previous_analysis=previous_analysis,
+            acknowledged_reasoning_triggers=acknowledged_reasoning_triggers,
+            ai_error=None,
+        )
 
     event_summary, vitals_summary = _summarize_event(event, vitals)
     assessment_summary = _summarize_assessment(previous_assessment)

@@ -33,7 +33,7 @@ from agents.shared.schemas import (
 
 logger = logging.getLogger(__name__)
 
-ADK_REASONING_MODEL = os.getenv("ADK_REASONING_MODEL", "gemini-2.5-pro")
+ADK_REASONING_MODEL = os.getenv("ADK_REASONING_MODEL", "gemini-3-pro-preview")
 ADK_REASONING_APP_NAME = "fall-reasoning-adk"
 
 
@@ -58,6 +58,7 @@ REASONING_AGENT_INSTRUCTION = """
 You are the Clinical Reasoning Agent for an emergency fall-response workflow.
 
 You must return structured JSON only.
+Do not return markdown, prose before the JSON object, code fences, or comments.
 
 Allowed severity values:
 - low
@@ -75,16 +76,9 @@ Allowed confidence band values:
 - medium
 - high
 
-Rules:
-- Follow the provided deterministic policy context carefully.
-- Use the grounded medical support as advisory clinical context, not as a source of made-up facts.
-- Separate severity choice from action choice.
-- Keep reasoning_summary short and operational.
-- Do not use fall confidence as a synonym for medical severity.
-- Do not invent diagnoses beyond the evidence.
-- Preserve uncertainty, missing facts, contradictions, blocking uncertainties, and override_policy when supported.
-- Do not return response_plan, reasoning_trace, or confidence values. The backend will supply those safely.
-- Return only JSON with these fields:
+Output contract:
+- Return exactly one JSON object.
+- Use exactly these top-level fields and no others:
   severity
   recommended_action
   reasoning_summary
@@ -98,6 +92,52 @@ Rules:
   hard_emergency_triggered
   blocking_uncertainties
   override_policy
+- Field types are strict:
+  severity: string enum
+  recommended_action: string enum
+  reasoning_summary: string
+  red_flags: array of strings
+  protective_signals: array of strings
+  suspected_risks: array of strings
+  vulnerability_modifiers: array of strings
+  missing_facts: array of strings
+  contradictions: array of strings
+  uncertainty: array of strings
+  hard_emergency_triggered: boolean
+  blocking_uncertainties: array of strings
+  override_policy: string
+- For every list field, return `[]` when there are no items.
+- Never return booleans, null, numbers, or objects for list fields.
+- Never return a list for string fields.
+- Never omit required fields.
+- If there is no override policy, return an empty string.
+
+Valid JSON shape example:
+{
+  "severity": "medium",
+  "recommended_action": "contact_family",
+  "reasoning_summary": "Concerning fall with no confirmed life-threatening red flag.",
+  "red_flags": ["cannot_stand"],
+  "protective_signals": [],
+  "suspected_risks": ["possible_injury_after_fall"],
+  "vulnerability_modifiers": ["older_adult"],
+  "missing_facts": ["head_strike_unconfirmed"],
+  "contradictions": [],
+  "uncertainty": ["Head strike not yet confirmed."],
+  "hard_emergency_triggered": false,
+  "blocking_uncertainties": ["head_strike_unconfirmed"],
+  "override_policy": "A short confirmation window is allowed because no explicit life-threatening trigger has been confirmed."
+}
+
+Rules:
+- Follow the provided deterministic policy context carefully.
+- Use the grounded medical support as advisory clinical context, not as a source of made-up facts.
+- Separate severity choice from action choice.
+- Keep reasoning_summary short and operational.
+- Do not use fall confidence as a synonym for medical severity.
+- Do not invent diagnoses beyond the evidence.
+- Preserve uncertainty, missing facts, contradictions, blocking uncertainties, and override_policy when supported.
+- Do not return response_plan, reasoning_trace, or confidence values. The backend will supply those safely.
 """.strip()
 
 
@@ -134,10 +174,7 @@ def _normalize_draft_payload(payload: dict) -> dict:
 
     for field in list_fields:
         value = normalized.get(field)
-        if value is None:
-            normalized[field] = []
-        elif isinstance(value, str):
-            normalized[field] = [value] if value.strip() else []
+        normalized[field] = _normalize_string_list_field(field, value)
 
     override_policy = normalized.get("override_policy")
     if override_policy is None:
@@ -146,6 +183,34 @@ def _normalize_draft_payload(payload: dict) -> dict:
         normalized["override_policy"] = "true" if override_policy else ""
 
     return normalized
+
+
+def _normalize_string_list_field(field_name: str, value: object) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+
+    if isinstance(value, (list, tuple, set)):
+        normalized_items: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                if item.strip():
+                    normalized_items.append(item.strip())
+                continue
+            normalized_items.append(str(item))
+        return normalized_items
+
+    logger.warning(
+        "[AdkReasoning] Coercing invalid list field to empty list | field=%s type=%s value=%r",
+        field_name,
+        type(value).__name__,
+        value,
+    )
+    return []
 
 
 def _reasoning_prompt(
@@ -170,6 +235,14 @@ def _reasoning_prompt(
     )
 
     return f"""
+Return exactly one JSON object that follows the instruction block schema.
+Schema reminders:
+- Every list field must be a JSON array of strings, never a boolean, null, number, or object.
+- Use [] for empty lists.
+- Use "" for override_policy when there is no override.
+- Use false for hard_emergency_triggered unless explicit life-threatening red flags overrode uncertainty.
+- Do not include any keys outside the required schema.
+
 Event details:
 - Motion State: {event.motion_state}
 - Confidence Score: {event.confidence_score}

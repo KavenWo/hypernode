@@ -6,8 +6,10 @@ function RuntimePill({ active, label, danger = false }) {
   );
 }
 
-export default function DashboardHeader({ runtimeStatus }) {
+export default function DashboardHeader({ runtimeStatus, authSession }) {
   const now = new Date().toLocaleTimeString("en-MY", { hour12: false });
+  const sessionUid = authSession?.backendSession?.session_uid || authSession?.firebaseUser?.uid || "";
+  const shortUid = sessionUid ? `${sessionUid.slice(0, 8)}...` : "";
 
   return (
     <div className="dash-header">
@@ -16,6 +18,7 @@ export default function DashboardHeader({ runtimeStatus }) {
         <p>Phase 4 session orchestration with dashboard-driven patient context</p>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+        <RuntimePill active={Boolean(sessionUid)} label={sessionUid ? `Anon ${shortUid}` : "Anonymous Auth"} danger={!sessionUid} />
         <RuntimePill active={Boolean(runtimeStatus?.backend_ok)} label="Backend API" danger={!runtimeStatus?.backend_ok} />
         <RuntimePill active={Boolean(runtimeStatus?.gemini_configured)} label="AI Model" />
         <RuntimePill active={Boolean(runtimeStatus?.vertex_search_configured)} label="Vertex Search" />

@@ -44,6 +44,17 @@ def get_agent_backend(role: str) -> AgentBackend:
     return _normalize_backend(os.getenv(role_env_name) or os.getenv("AGENT_BACKEND"))
 
 
+def role_uses_shared_genai_client(role: str) -> bool:
+    """Return whether a role still relies on the legacy shared genai.Client path.
+
+    Today, only the local reasoning and communication implementations consume
+    the injected `client`. ADK owns its own model calls, Genkit execution does
+    not use this client, and the Vertex runtime is still a placeholder.
+    """
+
+    return get_agent_backend(role) == "local"
+
+
 class FallAgentRuntime(Protocol):
     async def inspect_fall_event(self, event): ...
 

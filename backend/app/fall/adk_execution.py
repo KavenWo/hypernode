@@ -24,7 +24,7 @@ from agents.shared.schemas import (
 
 logger = logging.getLogger(__name__)
 
-ADK_EXECUTION_MODEL = os.getenv("ADK_EXECUTION_MODEL", "gemini-2.5-flash")
+ADK_EXECUTION_MODEL = os.getenv("ADK_EXECUTION_MODEL", "gemini-3-flash-preview")
 ADK_EXECUTION_APP_NAME = "fall-execution-adk"
 
 EXECUTION_AGENT_INSTRUCTION = """
@@ -83,16 +83,19 @@ Field rules:
 def _search_resource_from_env() -> tuple[str, str]:
     datastore_id = os.getenv("ADK_VERTEX_DATASTORE_ID", "").strip()
     search_engine_id = os.getenv("ADK_VERTEX_SEARCH_ENGINE_ID", "").strip()
+    generic_engine_id = os.getenv("VERTEX_AI_SEARCH_ENGINE_ID", "").strip()
 
-    if datastore_id and search_engine_id:
+    if datastore_id and (search_engine_id or generic_engine_id):
         raise RuntimeError("Set only one of ADK_VERTEX_DATASTORE_ID or ADK_VERTEX_SEARCH_ENGINE_ID.")
     if datastore_id:
         return "datastore", datastore_id
     if search_engine_id:
         return "engine", search_engine_id
+    if generic_engine_id:
+        return "engine", generic_engine_id
 
     raise RuntimeError(
-        "Missing ADK search resource. Set ADK_VERTEX_DATASTORE_ID or ADK_VERTEX_SEARCH_ENGINE_ID."
+        "Missing ADK search resource. Set ADK_VERTEX_DATASTORE_ID, ADK_VERTEX_SEARCH_ENGINE_ID, or VERTEX_AI_SEARCH_ENGINE_ID."
     )
 
 
@@ -176,6 +179,43 @@ def _fallback_execution_plan(
     )
 
 
+def _should_use_adk_execution(
+    *,
+    action: str,
+    clinical_assessment: ClinicalAssessmentSummary,
+    patient_answers: list[PatientAnswer],
+) -> bool:
+    """Return whether this case truly needs an ADK execution-model call.
+
+    The session runtime may still enter the execution phase for non-emergency
+    cases when the response plan contains bystander actions. We should only pay
+    the network/model cost when grounded protocol guidance is actually needed.
+    """
+
+    from app.fall.assessment_service import (
+        _requires_mandatory_protocol_grounding,
+        _should_trigger_grounded_guidance,
+        build_interaction_summary,
+    )
+
+    interaction_summary = build_interaction_summary(
+        interaction=None,
+        patient_answers=patient_answers,
+        recommended_action=action,
+    )
+    should_ground_guidance = _should_trigger_grounded_guidance(
+        action=action,
+        clinical_assessment=clinical_assessment,
+        interaction_summary=interaction_summary,
+        allow_grounding=True,
+    )
+    requires_protocol = _requires_mandatory_protocol_grounding(
+        clinical_assessment=clinical_assessment,
+        allow_grounding=True,
+    )
+    return should_ground_guidance or requires_protocol
+
+
 @lru_cache(maxsize=1)
 def _build_execution_agent():
     from google.adk.agents import llm_agent
@@ -241,6 +281,21 @@ async def run_adk_execution_plan(
     patient_answers: list[PatientAnswer],
 ) -> ExecutionPlan:
     """Run the ADK-backed execution agent with safe fallback semantics."""
+
+    if not _should_use_adk_execution(
+        action=action,
+        clinical_assessment=clinical_assessment,
+        patient_answers=patient_answers,
+    ):
+        logger.info(
+            "[AdkExecution] Skipping ADK model call; non-grounded execution is sufficient | action=%s severity=%s",
+            action,
+            clinical_assessment.severity,
+        )
+        return _fallback_execution_plan(
+            action=action,
+            clinical_assessment=clinical_assessment,
+        )
 
     prompt = _execution_prompt(
         action=action,

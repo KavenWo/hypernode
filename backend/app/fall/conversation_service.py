@@ -17,7 +17,7 @@ from app.fall.action_runtime_service import (
     sync_action_state_with_assessment,
     sync_dispatch_confirmation_task,
 )
-from app.fall.agent_runtime import get_fall_agent_runtime
+from app.fall.agent_runtime import get_fall_agent_runtime, role_uses_shared_genai_client
 from app.fall.assessment_service import build_interaction_summary, load_user_profile, run_fall_assessment, run_reasoning_assessment
 from app.fall.contracts import (
     CommunicationAgentAnalysis,
@@ -657,6 +657,60 @@ def _schedule_session_reasoning_refresh(session_id: str) -> None:
     task.add_done_callback(_cleanup_task)
 
 
+def _build_passive_turn_response(
+    *,
+    session,
+    assessment,
+) -> CommunicationTurnResponse:
+    """Return current session state without running a new communication turn.
+
+    Existing sessions should remain in a listening state until a new responder
+    message arrives. Frontend polling or accidental empty submissions should
+    not trigger another communication-agent pass.
+    """
+
+    latest_analysis = session.latest_analysis or CommunicationAgentAnalysis(
+        followup_text="",
+        responder_role="unknown",
+        communication_target="unknown",
+        patient_responded=False,
+        bystander_present=False,
+        bystander_can_help=False,
+        extracted_facts=[],
+        resolved_fact_keys=[],
+        open_question_key=None,
+        open_question_resolved=False,
+        conversation_state_summary="",
+        reasoning_needed=False,
+        reasoning_reason="",
+        should_surface_execution_update=False,
+        guidance_intent="question",
+        next_focus="general_check",
+        immediate_step=None,
+        quick_replies=[],
+    )
+
+    return CommunicationTurnResponse(
+        session_id=session.session_id,
+        interaction=session.interaction_summary,
+        communication_analysis=latest_analysis,
+        reasoning_invoked=False,
+        reasoning_status=session.reasoning_status,
+        reasoning_run_count=session.reasoning_run_count,
+        reasoning_reason=session.reasoning_reason,
+        reasoning_error=session.reasoning_error,
+        assistant_message="",
+        assistant_question=None,
+        guidance_steps=[],
+        quick_replies=latest_analysis.quick_replies,
+        assessment=assessment,
+        execution_updates=session.execution_updates,
+        action_states=session.action_states,
+        transcript_append=[],
+        reasoning_runs=session.reasoning_runs,
+    )
+
+
 def reset_fall_conversation_session(session_id: str) -> dict[str, bool | str]:
     """Cancel active work for a session and remove its backend-held state."""
 
@@ -717,6 +771,18 @@ async def run_fall_conversation_turn(
         )
         session = updated_session or session
 
+    if request.session_id and not request.latest_responder_message.strip():
+        logger.info(
+            "[Session %s] Passive turn received | returning current state without running communication",
+            _short_session_id(session.session_id),
+        )
+        current_session = fall_session_store.get_session(session.session_id) or session
+        existing_assessment = current_session.latest_assessment or request.previous_assessment
+        return _build_passive_turn_response(
+            session=current_session,
+            assessment=existing_assessment,
+        )
+
     existing_assessment = session.latest_assessment or request.previous_assessment
     conversation_history = session.conversation_history or request.conversation_history
 
@@ -725,10 +791,12 @@ async def run_fall_conversation_turn(
         session.session_id
     )
 
-    try:
-        client = get_genai_client()
-    except RuntimeError:
-        client = None
+    client = None
+    if role_uses_shared_genai_client("communication"):
+        try:
+            client = get_genai_client()
+        except RuntimeError:
+            client = None
 
     patient_profile = load_user_profile(request.event.user_id)
     runtime = get_fall_agent_runtime()

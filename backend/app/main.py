@@ -3,8 +3,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.auth import router as auth_router
 from app.api.routes.emergency import router as emergency_router
 from app.api.routes.fall import router as fall_router
+from app.api.routes.patient_data import router as patient_data_router
 from app.core.bootstrap import configure_runtime
 
 configure_runtime()
@@ -34,3 +36,5 @@ def read_root():
 
 app.include_router(fall_router)
 app.include_router(emergency_router)
+app.include_router(patient_data_router)
+app.include_router(auth_router)

@@ -59,7 +59,7 @@ def _build_agent():
 
     return llm_agent.LlmAgent(
         name="VertexSearchSmokeTest",
-        model=os.getenv("ADK_VERTEX_MODEL", "gemini-2.5-flash"),
+        model=os.getenv("ADK_VERTEX_MODEL", "gemini-3-flash-preview"),
         description="Small smoke test for Vertex AI Search grounding through ADK.",
         sub_agents=[],
         instruction=(
@@ -102,7 +102,7 @@ async def main() -> None:
     resource_kind, resource_id = _resource_from_env()
     print(f"Search resource kind: {resource_kind}")
     print(f"Search resource id: {resource_id}")
-    print(f"Model: {os.getenv('ADK_VERTEX_MODEL', 'gemini-2.5-flash')}")
+    print(f"Model: {os.getenv('ADK_VERTEX_MODEL', 'gemini-3-flash-preview')}")
     print(f"Prompt: {prompt}")
     print()
 

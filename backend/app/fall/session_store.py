@@ -9,14 +9,18 @@ from uuid import uuid4
 from agents.shared.schemas import (
     ActionStateSummary,
     CommunicationAgentAnalysis,
+    CommunicationState,
     ConversationMessage,
     ExecutionPlan,
+    ExecutionState,
     ExecutionUpdate,
     FallAssessment,
     FallEvent,
     InteractionInput,
     InteractionSummary,
+    ReasoningDecision,
     ReasoningRunSummary,
+    SessionState,
     VitalSigns,
 )
 
@@ -26,6 +30,10 @@ class FallSessionRecord:
     session_id: str
     event: FallEvent
     vitals: VitalSigns | None = None
+    state: SessionState = SessionState.IDLE
+    canonical_communication_state: CommunicationState | None = None
+    reasoning_decision: ReasoningDecision | None = None
+    execution_state: ExecutionState | None = None
     interaction_input: InteractionInput = field(default_factory=InteractionInput)
     interaction_summary: InteractionSummary | None = None
     latest_analysis: CommunicationAgentAnalysis | None = None
@@ -69,6 +77,12 @@ class FallSessionStore:
             session_id=session_id,
             event=event.model_copy(deep=True),
             vitals=vitals.model_copy(deep=True) if vitals else None,
+            state=SessionState.FALL_DETECTED,
+            canonical_communication_state=CommunicationState(
+                session_id=session_id,
+                state=SessionState.FALL_DETECTED,
+            ),
+            execution_state=ExecutionState(),
             interaction_input=interaction_input.model_copy(deep=True),
             reasoning_input_version=1,
             version=1,
@@ -156,6 +170,30 @@ class FallSessionStore:
                 return None
             record.interaction_summary = interaction_summary.model_copy(deep=True)
             record.latest_analysis = latest_analysis.model_copy(deep=True)
+            self._touch_locked(record)
+            return self._copy_record(record)
+
+    def store_canonical_flow_state(
+        self,
+        *,
+        session_id: str,
+        state: SessionState | None = None,
+        communication_state: CommunicationState | None = None,
+        reasoning_decision: ReasoningDecision | None = None,
+        execution_state: ExecutionState | None = None,
+    ) -> FallSessionRecord | None:
+        with self._lock:
+            record = self._sessions.get(session_id)
+            if record is None:
+                return None
+            if state is not None:
+                record.state = state
+            if communication_state is not None:
+                record.canonical_communication_state = communication_state.model_copy(deep=True)
+            if reasoning_decision is not None:
+                record.reasoning_decision = reasoning_decision.model_copy(deep=True)
+            if execution_state is not None:
+                record.execution_state = execution_state.model_copy(deep=True)
             self._touch_locked(record)
             return self._copy_record(record)
 
@@ -430,6 +468,14 @@ class FallSessionStore:
             session_id=record.session_id,
             event=record.event.model_copy(deep=True),
             vitals=record.vitals.model_copy(deep=True) if record.vitals else None,
+            state=record.state,
+            canonical_communication_state=(
+                record.canonical_communication_state.model_copy(deep=True)
+                if record.canonical_communication_state
+                else None
+            ),
+            reasoning_decision=record.reasoning_decision.model_copy(deep=True) if record.reasoning_decision else None,
+            execution_state=record.execution_state.model_copy(deep=True) if record.execution_state else None,
             interaction_input=record.interaction_input.model_copy(deep=True),
             interaction_summary=record.interaction_summary.model_copy(deep=True) if record.interaction_summary else None,
             latest_analysis=record.latest_analysis.model_copy(deep=True) if record.latest_analysis else None,

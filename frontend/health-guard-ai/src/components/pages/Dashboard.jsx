@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { DEMO_PROFILES, getVitalsPreset } from "../../data/mockData";
 import { PAGES } from "../../constants/pages";
+import {
+  createIncident,
+  executeIncidentAction,
+  submitIncidentAnswers,
+  updateIncidentStatus,
+} from "../../lib/incidentApi";
+import { fetchSessionHistory } from "../../lib/patientApi";
 import DashboardConversationPanel from "../dashboard/DashboardConversationPanel";
 import DashboardHeader from "../dashboard/DashboardHeader";
 import DashboardProfileCard from "../dashboard/DashboardProfileCard";
@@ -71,38 +78,91 @@ function makeInteractionPayload(interaction, latestMessage) {
   };
 }
 
-function mapAssessmentSeverity(severity) {
-  if (severity === "critical") {
-    return "Critical";
-  }
-  if (severity === "medium") {
-    return "Medium";
-  }
-  return "Low";
-}
-
-function buildHistoryEntry(profileName, latestAssessment, executionUpdate) {
+function mapIncidentAction(latestAssessment, latestTurn) {
   const recommendedAction = latestAssessment?.action?.recommended;
-  const event =
-    recommendedAction === "emergency_dispatch"
-      ? "Emergency Dispatch Triggered"
-      : "Dispatch Pending Confirmation";
+  const executionUpdates = latestTurn?.execution_updates || [];
 
-  const action = executionUpdate.status === "completed" ? "EMS Dispatched" : "Awaiting Confirmation";
-
-  return {
-    id: `h${Date.now()}`,
-    timestamp: new Date().toLocaleString("en-MY", { hour12: false }).slice(0, 16),
-    profile: profileName,
-    event,
-    severity: mapAssessmentSeverity(latestAssessment?.clinical_assessment?.severity),
-    action,
-    summary: latestAssessment?.clinical_assessment?.reasoning_summary || executionUpdate.detail,
-  };
+  if (executionUpdates.some((item) => item.type === "emergency_dispatch" && item.status === "completed")) {
+    return "call_ambulance";
+  }
+  if (
+    executionUpdates.some((item) =>
+      ["inform_family", "family_fall_reminder"].includes(item.type) && item.status === "completed",
+    )
+  ) {
+    return "call_family";
+  }
+  if (recommendedAction === "emergency_dispatch") {
+    return "call_ambulance";
+  }
+  if (recommendedAction === "contact_family") {
+    return "call_family";
+  }
+  return "monitor";
 }
 
-export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
-  const [profileIdx, setProfileIdx] = useState(0);
+function mapIncidentSeverity(latestAssessment) {
+  const severity = latestAssessment?.clinical_assessment?.severity;
+  if (severity === "critical" || severity === "high") {
+    return "red";
+  }
+  if (severity === "medium" || severity === "moderate") {
+    return "amber";
+  }
+  return "yellow";
+}
+
+function buildTriageAnswers(messages, interaction) {
+  const latestUserMessage = [...messages].reverse().find((message) => message.role !== "assistant");
+  return [
+    {
+      question: "patient_response_status",
+      answer: interaction.patient_response_status || "unknown",
+    },
+    {
+      question: "bystander_available",
+      answer: Boolean(interaction.bystander_available),
+    },
+    {
+      question: "latest_responder_message",
+      answer: latestUserMessage?.text || "",
+    },
+  ];
+}
+
+function deriveIncidentState(latestAssessment, latestTurn, action) {
+  const executionUpdates = latestTurn?.execution_updates || [];
+  const dispatchCompleted = executionUpdates.some(
+    (item) => item.type === "emergency_dispatch" && item.status === "completed",
+  );
+  const familyCompleted = executionUpdates.some(
+    (item) => ["inform_family", "family_fall_reminder"].includes(item.type) && item.status === "completed",
+  );
+
+  if (dispatchCompleted || familyCompleted) {
+    return "action_taken";
+  }
+  if (action === "monitor" && latestAssessment) {
+    return "monitoring";
+  }
+  if (latestAssessment?.clinical_assessment || latestAssessment?.action) {
+    return "reasoning";
+  }
+  if ((latestTurn?.conversation_history || []).length > 0) {
+    return "triage";
+  }
+  return "analyzing";
+}
+
+export default function Dashboard({
+  onNavigate,
+  historyLog,
+  setHistoryLog,
+  authSession,
+  patientProfiles,
+  currentPatientId,
+  onSelectPatient,
+}) {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showProfileSelector, setShowProfileSelector] = useState(false);
   const [vitalsMode, setVitalsMode] = useState("normal");
@@ -111,6 +171,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
 
   const [interaction, setInteraction] = useState(DEFAULT_INTERACTION);
   const [sessionId, setSessionId] = useState("");
+  const [incidentId, setIncidentId] = useState("");
   const [messages, setMessages] = useState([]);
   const [latestAssessment, setLatestAssessment] = useState(null);
   const [latestTurn, setLatestTurn] = useState(null);
@@ -123,17 +184,24 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
   const isResizing = useRef(false);
   const activeRequestControllerRef = useRef(null);
   const streamRef = useRef(null);
+  const pollingRef = useRef(null);
   const sessionIdRef = useRef("");
+  const incidentIdRef = useRef("");
+  const incidentSyncKeyRef = useRef("");
+  const executedIncidentActionsRef = useRef(new Set());
 
-  const profile = DEMO_PROFILES[profileIdx];
+  const profile = patientProfiles.find((item) => item.patientId === currentPatientId) || patientProfiles[0] || DEMO_PROFILES[0];
+  const sessionUid = authSession?.backendSession?.session_uid || "";
   const baseVitals = getVitalsPreset(profile.userId, vitalsMode);
   const [vitals, setVitals] = useState(() => createVitalsState(baseVitals));
-
-  const lastHistoryKeyRef = useRef("");
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    incidentIdRef.current = incidentId;
+  }, [incidentId]);
 
   useEffect(() => {
     function handleMouseMove(e) {
@@ -212,100 +280,208 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
     };
   }, []);
 
+  function stopSessionSync() {
+    if (streamRef.current) {
+      streamRef.current.close();
+      streamRef.current = null;
+    }
+    if (pollingRef.current) {
+      window.clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }
+
+  function applySessionState(payload) {
+    setMessages((currentMessages) => {
+      const newHistory = payload.conversation_history || [];
+      if (newHistory.length < currentMessages.length) {
+        return currentMessages;
+      }
+      return newHistory;
+    });
+
+    setLatestAssessment(payload.assessment || null);
+    setLatestTurn((current) => {
+      if (!current) {
+        return current;
+      }
+      const nextAnalysis = payload.latest_analysis || current.communication_analysis;
+      const nextAssistantMessage =
+        nextAnalysis?.followup_text ||
+        payload.conversation_history?.filter((message) => message.role === "assistant").at(-1)?.text ||
+        current.assistant_message;
+      const nextGuidanceSteps = nextAnalysis?.immediate_step
+        ? [nextAnalysis.immediate_step]
+        : current.guidance_steps || [];
+      return {
+        ...current,
+        interaction: payload.interaction || current.interaction,
+        communication_analysis: nextAnalysis,
+        reasoning_status: payload.reasoning_status,
+        reasoning_run_count: payload.reasoning_run_count ?? current.reasoning_run_count ?? 0,
+        reasoning_reason: payload.reasoning_reason,
+        reasoning_error: payload.reasoning_error,
+        assessment: payload.assessment || current.assessment,
+        assistant_message: nextAssistantMessage,
+        guidance_steps: nextGuidanceSteps,
+        quick_replies: nextAnalysis?.quick_replies || current.quick_replies || [],
+        execution_updates: payload.execution_updates || current.execution_updates || [],
+        action_states: payload.action_states || current.action_states || [],
+      };
+    });
+  }
+
   useEffect(() => {
     if (!sessionId) {
+      stopSessionSync();
       return undefined;
     }
+
+    let cancelled = false;
+
+    async function fetchSessionState() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-state/${sessionId}`);
+        if (!response.ok) {
+          throw new Error(`Session state failed (${response.status})`);
+        }
+        const payload = await response.json();
+        if (!cancelled) {
+          applySessionState(payload);
+        }
+      } catch {
+        if (!cancelled) {
+          setStreamStatus("disconnected");
+        }
+      }
+    }
+
+    function startPolling() {
+      if (pollingRef.current) {
+        return;
+      }
+      setStreamStatus("polling");
+      pollingRef.current = window.setInterval(() => {
+        void fetchSessionState();
+      }, 1500);
+    }
+
+    void fetchSessionState();
 
     const stream = new EventSource(`${API_BASE_URL}/api/v1/events/fall/session-events/${sessionId}`);
     streamRef.current = stream;
     setStreamStatus("connecting");
 
     stream.onopen = () => {
+      if (pollingRef.current) {
+        window.clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
       setStreamStatus("connected");
     };
 
     stream.addEventListener("session_state", (event) => {
       const payload = JSON.parse(event.data);
-      
-      setMessages((currentMessages) => {
-        const newHistory = payload.conversation_history || [];
-        // If we are currently sending a message, don't let a stale SSE history 
-        // (one that hasn't recorded our new message yet) wipe it out.
-        if (newHistory.length < currentMessages.length) {
-          return currentMessages;
-        }
-        return newHistory;
-      });
-      setLatestAssessment(payload.assessment || null);
-      setLatestTurn((current) => {
-        if (!current) {
-          return current;
-        }
-        const nextAnalysis = payload.latest_analysis || current.communication_analysis;
-        const nextAssistantMessage =
-          nextAnalysis?.followup_text ||
-          payload.conversation_history?.filter((message) => message.role === "assistant").at(-1)?.text ||
-          current.assistant_message;
-        const nextGuidanceSteps = nextAnalysis?.immediate_step
-          ? [nextAnalysis.immediate_step]
-          : current.guidance_steps || [];
-        return {
-          ...current,
-          interaction: payload.interaction || current.interaction,
-          communication_analysis: nextAnalysis,
-          reasoning_status: payload.reasoning_status,
-          reasoning_run_count: payload.reasoning_run_count ?? current.reasoning_run_count ?? 0,
-          reasoning_reason: payload.reasoning_reason,
-          reasoning_error: payload.reasoning_error,
-          assessment: payload.assessment || current.assessment,
-          assistant_message: nextAssistantMessage,
-          guidance_steps: nextGuidanceSteps,
-          quick_replies: nextAnalysis?.quick_replies || current.quick_replies || [],
-          execution_updates: payload.execution_updates || current.execution_updates || [],
-          action_states: payload.action_states || current.action_states || [],
-        };
-      });
+      applySessionState(payload);
     });
 
     stream.onerror = () => {
-      setStreamStatus("disconnected");
       stream.close();
       if (streamRef.current === stream) {
         streamRef.current = null;
       }
+      startPolling();
     };
 
     return () => {
-      stream.close();
-      if (streamRef.current === stream) {
-        streamRef.current = null;
-      }
+      cancelled = true;
+      stopSessionSync();
       setStreamStatus("idle");
     };
   }, [sessionId]);
 
   useEffect(() => {
-    const executionUpdate = latestTurn?.execution_updates?.find(
-      (item) => item.type === "emergency_dispatch" && ["completed", "pending_confirmation"].includes(item.status),
-    );
-
-    if (!executionUpdate || !latestAssessment || !sessionId) {
+    if (!incidentId || !sessionUid) {
       return;
     }
 
-    const historyKey = `${sessionId}:${executionUpdate.type}:${executionUpdate.status}:${latestAssessment.action?.recommended}`;
-    if (lastHistoryKeyRef.current === historyKey) {
+    const action = mapIncidentAction(latestAssessment, latestTurn);
+    const state = deriveIncidentState(latestAssessment, latestTurn, action);
+    const triageAnswers = buildTriageAnswers(messages, interaction);
+    const aiDecision = {
+      action,
+      reasoning: latestAssessment?.clinical_assessment?.reasoning_summary || latestAssessment?.action?.rationale || "",
+      response_plan: latestAssessment?.response_plan || null,
+      assessment: latestAssessment?.clinical_assessment || null,
+    };
+    const syncKey = JSON.stringify({
+      incidentId,
+      state,
+      action,
+      severity: mapIncidentSeverity(latestAssessment),
+      triageAnswers,
+      reasoning: aiDecision.reasoning,
+      executionUpdates: latestTurn?.execution_updates || [],
+    });
+
+    if (incidentSyncKeyRef.current === syncKey) {
       return;
     }
 
-    lastHistoryKeyRef.current = historyKey;
-    setHistoryLog((current) => [buildHistoryEntry(profile.name, latestAssessment, executionUpdate), ...current]);
-  }, [latestAssessment, latestTurn, profile.name, sessionId, setHistoryLog]);
+    incidentSyncKeyRef.current = syncKey;
+
+    let cancelled = false;
+
+    async function syncIncident() {
+      try {
+        await submitIncidentAnswers(incidentId, {
+          triage_answers: triageAnswers,
+          ai_decision: aiDecision,
+          severity: mapIncidentSeverity(latestAssessment),
+          final_action: action,
+        });
+
+        await updateIncidentStatus(incidentId, { state });
+
+        const shouldExecuteFamily = (latestTurn?.execution_updates || []).some(
+          (item) => ["inform_family", "family_fall_reminder"].includes(item.type) && item.status === "completed",
+        );
+        const shouldExecuteDispatch = (latestTurn?.execution_updates || []).some(
+          (item) => item.type === "emergency_dispatch" && item.status === "completed",
+        );
+
+        if (shouldExecuteFamily || shouldExecuteDispatch) {
+          const executionKey = `${incidentId}:${action}`;
+          if (!executedIncidentActionsRef.current.has(executionKey)) {
+            await executeIncidentAction(incidentId, action);
+            executedIncidentActionsRef.current.add(executionKey);
+          }
+        }
+
+        if (!cancelled && ["action_taken", "resolved"].includes(state)) {
+          const refreshedHistory = await fetchSessionHistory(sessionUid);
+          if (!cancelled) {
+            setHistoryLog(refreshedHistory);
+          }
+        }
+      } catch (syncError) {
+        if (!cancelled) {
+          setError(syncError.message || "Unable to sync incident record.");
+        }
+      }
+    }
+
+    syncIncident();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [incidentId, interaction, latestAssessment, latestTurn, messages, sessionUid, setHistoryLog]);
 
   function resetConversationState() {
     setInteraction(DEFAULT_INTERACTION);
     setSessionId("");
+    setIncidentId("");
     setMessages([]);
     setLatestAssessment(null);
     setLatestTurn(null);
@@ -313,6 +489,9 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
     setError("");
     setStreamStatus("idle");
     setPhase("idle");
+    incidentSyncKeyRef.current = "";
+    executedIncidentActionsRef.current = new Set();
+    stopSessionSync();
   }
 
   function abortActiveRequest() {
@@ -392,6 +571,22 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
       setLatestAssessment(payload.assessment || null);
       setMessages(payload.transcript_append || []);
       setPhase("session_ready");
+      if (sessionUid) {
+        const incident = await createIncident({
+          sessionUid,
+          patientId: profile.patientId,
+          simulationTrigger: {
+            motion_state: motionState,
+            confidence_score: 0.98,
+            realtime_session_id: payload.session_id,
+          },
+          videoMetadata: {
+            source: "dashboard_simulation",
+            vitals_mode: vitalsMode,
+          },
+        });
+        setIncidentId(incident.incident_id);
+      }
     } catch (requestError) {
       if (requestError.name === "AbortError") {
         setPhase("idle");
@@ -536,6 +731,19 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
           execution_updates: payload.execution_updates || current.execution_updates || [],
         };
       });
+      if (incidentIdRef.current) {
+        if (decision === "confirm" && actionType === "emergency_dispatch") {
+          await executeIncidentAction(incidentIdRef.current, "call_ambulance");
+          executedIncidentActionsRef.current.add(`${incidentIdRef.current}:call_ambulance`);
+          if (sessionUid) {
+            const refreshedHistory = await fetchSessionHistory(sessionUid);
+            setHistoryLog(refreshedHistory);
+          }
+        }
+        if (decision === "cancel") {
+          await updateIncidentStatus(incidentIdRef.current, { state: "monitoring", summary: "Emergency dispatch was canceled by the responder." });
+        }
+      }
     } catch (requestError) {
       if (requestError.name === "AbortError") {
         return;
@@ -550,7 +758,7 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      <DashboardHeader runtimeStatus={runtimeStatus} />
+      <DashboardHeader runtimeStatus={runtimeStatus} authSession={authSession} />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         
@@ -559,11 +767,12 @@ export default function Dashboard({ onNavigate, historyLog, setHistoryLog }) {
           <div className="dash-top">
             <DashboardProfileCard
               profile={profile}
-              profileIdx={profileIdx}
+              patientProfiles={patientProfiles.length ? patientProfiles : [profile]}
+              currentPatientId={currentPatientId}
               showProfileSelector={showProfileSelector}
               setShowProfileModal={setShowProfileModal}
               setShowProfileSelector={setShowProfileSelector}
-              setProfileIdx={setProfileIdx}
+              onSelectPatient={onSelectPatient}
               onNavigateToProfile={() => onNavigate(PAGES.PROFILE)}
             />
             <DashboardVitalsPanel vitals={vitals} vitalsMode={vitalsMode} setVitalsMode={setVitalsMode} />

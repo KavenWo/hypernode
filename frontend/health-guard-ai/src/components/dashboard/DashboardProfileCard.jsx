@@ -1,12 +1,11 @@
-import { DEMO_PROFILES } from "../../data/mockData";
-
 export default function DashboardProfileCard({
   profile,
-  profileIdx,
+  patientProfiles,
+  currentPatientId,
   showProfileSelector,
   setShowProfileModal,
   setShowProfileSelector,
-  setProfileIdx,
+  onSelectPatient,
   onNavigateToProfile,
 }) {
   return (
@@ -63,14 +62,14 @@ export default function DashboardProfileCard({
           </button>
         </div>
       </div>
-      {showProfileSelector && (
-        <div className="profile-selector">
-          {DEMO_PROFILES.map((item, index) => (
+      {patientProfiles.length > 1 && showProfileSelector ? (
+        <div className="profile-selector" style={{ marginTop: 10 }}>
+          {patientProfiles.map((item) => (
             <div
-              key={item.id}
-              className={`profile-option ${index === profileIdx ? "selected" : ""}`}
+              key={item.patientId}
+              className={`profile-option ${item.patientId === currentPatientId ? "selected" : ""}`}
               onClick={() => {
-                setProfileIdx(index);
+                onSelectPatient(item.patientId);
                 setShowProfileSelector(false);
               }}
             >
@@ -79,15 +78,15 @@ export default function DashboardProfileCard({
                 <h4>{item.name}</h4>
                 <p>{item.scenarioLabel}</p>
               </div>
-              {index === profileIdx && (
+              {item.patientId === currentPatientId ? (
                 <span className="tag tag-green" style={{ marginLeft: "auto", fontSize: 9 }}>
                   ACTIVE
                 </span>
-              )}
+              ) : null}
             </div>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

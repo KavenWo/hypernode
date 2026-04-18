@@ -12,6 +12,7 @@ dependencies = [
   "google-genai>=1.46,<2.0",
   "genkit; sys_platform != 'win32'",
   "genkit-plugin-google-genai; sys_platform != 'win32'",
+  "google-adk>=1.14.1",
 ]
 
 [tool.uv]

@@ -13,6 +13,7 @@ inputs, internal analysis artifacts, or final product-facing responses.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +31,73 @@ class VitalSigns(BaseModel):
     blood_pressure_systolic: int = Field(..., description="Systolic blood pressure.")
     blood_pressure_diastolic: int = Field(..., description="Diastolic blood pressure.")
     blood_oxygen_sp02: float = Field(..., description="Blood oxygen saturation percentage.")
+
+
+class SessionState(str, Enum):
+    IDLE = "idle"
+    FALL_DETECTED = "fall_detected"
+    INITIAL_ACTIONS_STARTED = "initial_actions_started"
+    OPENING_CHECK = "opening_check"
+    AWAITING_OPENING_RESPONSE = "awaiting_opening_response"
+    BYSTANDER_CHECK = "bystander_check"
+    CONSCIOUSNESS_CHECK = "consciousness_check"
+    BREATHING_CHECK = "breathing_check"
+    OPTIONAL_FLAGS_CHECK = "optional_flags_check"
+    READY_FOR_REASONING = "ready_for_reasoning"
+    REASONING_IN_PROGRESS = "reasoning_in_progress"
+    AWAITING_DISPATCH_CONFIRMATION = "awaiting_dispatch_confirmation"
+    EXECUTION_IN_PROGRESS = "execution_in_progress"
+    COMPLETED = "completed"
+
+
+class DispatchStatus(str, Enum):
+    NOT_REQUESTED = "not_requested"
+    PENDING_CONFIRMATION = "pending_confirmation"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    AUTO_DISPATCHED = "auto_dispatched"
+    DISPATCHED = "dispatched"
+
+
+class SentinelResult(BaseModel):
+    fall_detected: bool = Field(..., description="Whether a fall was detected from the uploaded media.")
+    explanation: str = Field(..., description="Short explanation of what the sentinel agent observed.")
+    confidence: float = Field(..., description="Confidence score for the sentinel result from 0.0 to 1.0.")
+
+
+class CommunicationState(BaseModel):
+    session_id: str = Field(..., description="Server-side session identifier.")
+    state: SessionState = Field(..., description="Current canonical session state.")
+    mode: str = Field(default="patient_only", description="Responder mode such as patient_only or bystander.")
+    responder_role: str = Field(default="unknown", description="Best known active responder role.")
+    patient_responded: bool = Field(default=False, description="Whether the patient has responded in the session.")
+    bystander_present: bool = Field(default=False, description="Whether a bystander is known to be present.")
+    conscious: bool | None = Field(default=None, description="Whether the patient is known to be conscious.")
+    breathing_normal: bool | None = Field(default=None, description="Whether the patient is known to be breathing normally.")
+    flags: list[str] = Field(default_factory=list, description="Allowed extracted flags such as bleeding, pain, or mobility.")
+    latest_prompt: str = Field(default="", description="Latest assistant prompt in the canonical flow.")
+    latest_message: str = Field(default="", description="Latest responder message seen by the backend.")
+    reasoning_call_count: int = Field(default=0, description="How many reasoning calls have run in this session.")
+
+
+class ReasoningDecision(BaseModel):
+    scenario: str = Field(..., description="Final scenario label such as CPR, no_response, or non_critical.")
+    severity: str = Field(..., description="Final severity label.")
+    action: str = Field(..., description="Final deterministic action chosen by the reasoning agent.")
+    reason: str = Field(..., description="Short explanation for the final decision.")
+    instructions: str = Field(..., description="Primary instruction to hand off into execution.")
+    confidence: float = Field(..., description="Reasoning confidence from 0.0 to 1.0.")
+    flags_used: list[str] = Field(default_factory=list, description="Flags used by the reasoning agent to reach the decision.")
+
+
+class ExecutionState(BaseModel):
+    phase: str = Field(default="idle", description="Execution phase such as idle, dispatch_countdown, or guidance.")
+    countdown_seconds: int | None = Field(default=None, description="Active countdown seconds when dispatch confirmation is pending.")
+    family_notified_initial: bool = Field(default=False, description="Whether the initial family alert has been sent.")
+    family_notified_update: bool = Field(default=False, description="Whether a later family update has been sent.")
+    dispatch_status: DispatchStatus = Field(default=DispatchStatus.NOT_REQUESTED, description="Current dispatch lifecycle state.")
+    guidance_protocol: str = Field(default="", description="Active grounded protocol such as cpr.")
+    guidance_step_index: int = Field(default=0, description="Current index into the execution guidance steps.")
 
 
 class TriageQuestion(BaseModel):

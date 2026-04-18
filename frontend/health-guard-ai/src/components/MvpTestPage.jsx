@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const DEFAULT_EVENT = {
   user_id: "user_001",
@@ -112,21 +112,104 @@ export default function MvpTestPage() {
   const [phase, setPhase] = useState("idle");
   const [error, setError] = useState("");
   const [streamStatus, setStreamStatus] = useState("idle");
+  const streamRef = useRef(null);
+  const pollingRef = useRef(null);
+
+  function stopSessionSync() {
+    if (streamRef.current) {
+      streamRef.current.close();
+      streamRef.current = null;
+    }
+    if (pollingRef.current) {
+      window.clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }
+
+  function applySessionState(payload) {
+    setMessages((prevMessages) => {
+      const backendHistory = payload.conversation_history || [];
+      if (backendHistory.length <= prevMessages.length) {
+        return prevMessages;
+      }
+      const newMessages = backendHistory.slice(prevMessages.length);
+      if (newMessages.length === 0) {
+        return prevMessages;
+      }
+      return [...prevMessages, ...newMessages];
+    });
+
+    setLatestAssessment(payload.assessment || null);
+    setLatestTurn((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        reasoning_status: payload.reasoning_status,
+        reasoning_run_count: payload.reasoning_run_count ?? current.reasoning_run_count ?? 0,
+        reasoning_reason: payload.reasoning_reason,
+        reasoning_error: payload.reasoning_error,
+        assessment: payload.assessment || current.assessment,
+        execution_updates: payload.execution_updates || current.execution_updates || [],
+        reasoning_runs: payload.reasoning_runs || current.reasoning_runs || [],
+      };
+    });
+  }
 
   useEffect(() => {
     if (!sessionId) {
+      stopSessionSync();
       return undefined;
     }
 
+    let cancelled = false;
+
+    async function fetchSessionState() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-state/${sessionId}`);
+        if (!response.ok) {
+          throw new Error(`Session state failed (${response.status})`);
+        }
+        const payload = await response.json();
+        if (!cancelled) {
+          applySessionState(payload);
+        }
+      } catch {
+        if (!cancelled) {
+          setStreamStatus("disconnected");
+        }
+      }
+    }
+
+    function startPolling() {
+      if (pollingRef.current) {
+        return;
+      }
+      setStreamStatus("polling");
+      pollingRef.current = window.setInterval(() => {
+        void fetchSessionState();
+      }, 1500);
+    }
+
+    void fetchSessionState();
+
     const stream = new EventSource(`${API_BASE_URL}/api/v1/events/fall/session-events/${sessionId}`);
+    streamRef.current = stream;
     setStreamStatus("connecting");
 
     stream.onopen = () => {
+      if (pollingRef.current) {
+        window.clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
       setStreamStatus("connected");
     };
 
     stream.addEventListener("session_state", (event) => {
       const payload = JSON.parse(event.data);
+      applySessionState(payload);
+      return;
 
       // Merge messages: only append new ones from the backend (e.g., auto-injected
       // dispatch/family notifications). The local messages list is the source of
@@ -167,12 +250,16 @@ export default function MvpTestPage() {
     });
 
     stream.onerror = () => {
-      setStreamStatus("disconnected");
       stream.close();
+      if (streamRef.current === stream) {
+        streamRef.current = null;
+      }
+      startPolling();
     };
 
     return () => {
-      stream.close();
+      cancelled = true;
+      stopSessionSync();
       setStreamStatus("idle");
     };
   }, [sessionId]);
@@ -223,6 +310,7 @@ export default function MvpTestPage() {
   }
 
   function resetConversation() {
+    stopSessionSync();
     setSessionId("");
     setMessages([]);
     setLatestAssessment(null);

@@ -54,6 +54,94 @@ uv run scripts/seed_firestore.py
 If `FIRESTORE_PROJECT_ID` and Google Cloud credentials are configured, the sample patient is written to Firestore.
 Otherwise the backend falls back to the local sample profile in `data/sample_patient.json`.
 
+## Firebase And Firestore Setup
+
+### 1. Enable the Firebase services
+
+In the Firebase console for your project:
+
+- enable `Firestore Database`
+- enable `Authentication`
+- turn on the `Anonymous` sign-in provider
+
+### 2. Backend credentials
+
+Create a local `backend/.env` from [`.env.example`](C:/Users/Kaven/Desktop/hypernode/backend/.env.example) and fill in:
+
+- `GOOGLE_CLOUD_PROJECT`
+- `FIRESTORE_PROJECT_ID`
+- `FIREBASE_PROJECT_ID`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+
+`GOOGLE_APPLICATION_CREDENTIALS` should point to a Firebase or Google Cloud service account JSON with Firestore access.
+
+If you already have the Firebase Web App config object, then the backend project ID should be the same value as the web config's `projectId`.
+
+Example:
+
+- web config `projectId`: `hypernode-b557d`
+- backend `FIREBASE_PROJECT_ID`: `hypernode-b557d`
+- backend `FIRESTORE_PROJECT_ID`: `hypernode-b557d`
+- backend `GOOGLE_CLOUD_PROJECT`: `hypernode-b557d`
+
+Example:
+
+```powershell
+GOOGLE_CLOUD_PROJECT=your-firebase-project-id
+FIRESTORE_PROJECT_ID=your-firebase-project-id
+FIREBASE_PROJECT_ID=your-firebase-project-id
+GOOGLE_APPLICATION_CREDENTIALS=C:\secrets\firebase-service-account.json
+```
+
+### 3. Frontend credentials
+
+Create a local `frontend/health-guard-ai/.env` from [`.env.example`](C:/Users/Kaven/Desktop/hypernode/frontend/health-guard-ai/.env.example) and fill in the Firebase Web App config:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_FIREBASE_MEASUREMENT_ID`
+- `VITE_API_BASE_URL`
+
+### 4. Firestore security rules
+
+The starter rules for this project live at [firebase/firestore.rules](C:/Users/Kaven/Desktop/hypernode/firebase/firestore.rules).
+
+These rules:
+
+- deny all unauthenticated access
+- allow each anonymous Firebase user to read and write only their own `sessions/{uid}` document
+- allow access to `incidents` and `history` when `session_uid == request.auth.uid`
+- allow patient profile access only when the authenticated session owns that patient
+
+### 5. Deploy the rules
+
+If you use the Firebase CLI, from the repo root:
+
+```powershell
+firebase deploy --only firestore:rules
+```
+
+Or paste the contents of [firebase/firestore.rules](C:/Users/Kaven/Desktop/hypernode/firebase/firestore.rules) into the Firestore Rules editor in the Firebase console.
+
+### 6. Session bootstrap flow
+
+The backend now exposes:
+
+- `POST /api/v1/session/bootstrap`
+- `GET /api/v1/session/me`
+
+The intended frontend flow is:
+
+1. user clicks `Continue` on the welcome modal
+2. frontend signs in anonymously with Firebase Auth
+3. frontend gets the Firebase ID token
+4. frontend calls `POST /api/v1/session/bootstrap`
+5. backend verifies the token, upserts `sessions/{uid}`, and creates or loads the default patient profile
+
 ## Vertex AI Search
 
 The clinical and bystander flows can retrieve grounded medical guidance through `agents/bystander/knowledge_base.py`.
