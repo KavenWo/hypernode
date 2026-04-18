@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.auth import router as auth_router
-from app.api.routes.emergency import router as emergency_router
 from app.api.routes.fall import router as fall_router
 from app.api.routes.patient_data import router as patient_data_router
 from app.core.bootstrap import configure_runtime
@@ -25,16 +24,20 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    """Simple health endpoint plus a hint for the main fall-flow sequence."""
+    """Simple health endpoint plus hints for the canonical fall-flow sequence."""
     return {
         "status": "ok",
         "message": "Vital Signs Agentic Backend is running",
-        "session_flow": "POST /api/v1/events/fall/session-turn",
-        "evaluation_flow": "POST /api/v1/events/fall/questions -> POST /api/v1/events/fall/assess",
+        "canonical_flow": {
+            "start_session": "POST /api/v1/events/fall/session-start",
+            "continue_session": "POST /api/v1/events/fall/session-turn",
+            "read_session_state": "GET /api/v1/events/fall/session-state/{session_id}",
+            "stream_session_events": "GET /api/v1/events/fall/session-events/{session_id}",
+            "control_session_action": "POST /api/v1/events/fall/session-action/{session_id}",
+        },
     }
 
 
 app.include_router(fall_router)
-app.include_router(emergency_router)
 app.include_router(patient_data_router)
 app.include_router(auth_router)

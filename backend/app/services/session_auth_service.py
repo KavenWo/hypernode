@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from datetime import datetime
 
 from fastapi import Header, HTTPException
 from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field
+
+# Persistent request object to cache Google certificates
+HTTP_REQUEST = Request()
 
 from db.firebase_client import (
     get_or_create_anonymous_session,
@@ -18,6 +23,8 @@ from db.firebase_client import (
     seed_default_session_patients,
 )
 from db.models import AnonymousSession, FrontendPatientProfile
+
+logger = logging.getLogger(__name__)
 
 
 class SessionBootstrapRequest(BaseModel):
@@ -74,7 +81,8 @@ def verify_firebase_id_token(raw_token: str) -> dict:
         )
 
     try:
-        token_payload = id_token.verify_firebase_token(raw_token, Request(), audience=project_id)
+        # Reusing HTTP_REQUEST for certificate caching
+        token_payload = id_token.verify_firebase_token(raw_token, HTTP_REQUEST, audience=project_id)
     except Exception as exc:  # pragma: no cover - exact Google exception types vary
         raise HTTPException(status_code=401, detail=f"Invalid Firebase ID token: {exc}") from exc
 
@@ -86,27 +94,56 @@ def verify_firebase_id_token(raw_token: str) -> dict:
     return token_payload
 
 
-def bootstrap_anonymous_session(request: SessionBootstrapRequest) -> SessionBootstrapResponse:
+def bootstrap_anonymous_session(
+    request: SessionBootstrapRequest, defer_seeding: bool = False
+) -> SessionBootstrapResponse:
+    t0 = time.time()
     token_payload = verify_firebase_id_token(request.id_token)
+    t1 = time.time()
     session_uid = _token_subject(token_payload)
     patient_id = request.patient_id or session_uid
 
     session = get_or_create_anonymous_session(session_uid=session_uid, patient_id=patient_id)
-    seeded_profiles = seed_default_session_patients(session_uid) if not session.default_patient_seeded else list_session_patient_profiles(session_uid)
-    session = get_or_create_anonymous_session(session_uid=session_uid, patient_id=patient_id)
-
+    t2 = time.time()
+    
+    seeded_profiles = []
     profile = None
-    if request.create_profile:
-        existing_profile = load_frontend_patient_profile(patient_id=patient_id, session_uid=session_uid)
-        profile = existing_profile.model_copy(update={"session_uid": session_uid, "updated_at": datetime.utcnow()})
-        save_frontend_patient_profile(profile)
+
+    if not defer_seeding:
+        seeded_profiles = (
+            seed_default_session_patients(session_uid)
+            if not session.default_patient_seeded
+            else list_session_patient_profiles(session_uid)
+        )
+        t3 = time.time()
+        # Refresh session after seeding
+        session = get_or_create_anonymous_session(session_uid=session_uid, patient_id=patient_id)
+
+        if request.create_profile:
+            existing_profile = load_frontend_patient_profile(patient_id=patient_id, session_uid=session_uid)
+            profile = existing_profile.model_copy(update={"session_uid": session_uid, "updated_at": datetime.utcnow()})
+            save_frontend_patient_profile(profile)
+        t4 = time.time()
+        logger.info(f"Bootstrap timing: auth={t1-t0:.3f}s, session={t2-t1:.3f}s, seeding={t3-t2:.3f}s, profile={t4-t3:.3f}s")
+    else:
+        logger.info(f"Light bootstrap timing: auth={t1-t0:.3f}s, session={t2-t1:.3f}s")
 
     return SessionBootstrapResponse(
         session=session,
         patient_id=patient_id,
         profile=profile,
         patients=seeded_profiles,
+        verified=True,
     )
+
+
+def background_bootstrap_tasks(session_uid: str, patient_id: str, create_profile: bool) -> None:
+    """Perform heavy Firestore seeding and profile setup in the background."""
+    seed_default_session_patients(session_uid)
+    if create_profile:
+        existing_profile = load_frontend_patient_profile(patient_id=patient_id, session_uid=session_uid)
+        profile = existing_profile.model_copy(update={"session_uid": session_uid, "updated_at": datetime.utcnow()})
+        save_frontend_patient_profile(profile)
 
 
 def resolve_session_from_authorization(authorization: str | None) -> SessionMeResponse:

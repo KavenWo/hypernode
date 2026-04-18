@@ -18,6 +18,51 @@ function toTitleCase(value) {
     .join(" ");
 }
 
+function formatFlags(flags) {
+  if (!Array.isArray(flags) || flags.length === 0) {
+    return "None";
+  }
+  return flags.map((flag) => toTitleCase(flag)).join(", ");
+}
+
+function formatBooleanLabel(value, positiveLabel, negativeLabel = "Unknown") {
+  if (value === true) {
+    return positiveLabel;
+  }
+  if (value === false) {
+    return negativeLabel;
+  }
+  return "Unknown";
+}
+
+function buildFlowSteps(canonicalState) {
+  const orderedStates = [
+    ["awaiting_opening_response", "Are You Okay?"],
+    ["bystander_check", "Bystander Check"],
+    ["consciousness_check", "Consciousness Check"],
+    ["breathing_check", "Breathing Check"],
+    ["optional_flags_check", "Optional Flags"],
+    ["ready_for_reasoning", "Reasoning Ready"],
+    ["reasoning_in_progress", "Reasoning"],
+    ["awaiting_dispatch_confirmation", "Dispatch Confirmation"],
+    ["execution_in_progress", "Execution"],
+  ];
+
+  const currentIndex = orderedStates.findIndex(([state]) => state === canonicalState);
+  return orderedStates.map(([state, label], index) => ({
+    state,
+    label,
+    status:
+      currentIndex === -1
+        ? "upcoming"
+        : index < currentIndex
+          ? "completed"
+          : index === currentIndex
+            ? "current"
+            : "upcoming",
+  }));
+}
+
 export default function DashboardSessionStateCard({
   sessionId,
   streamStatus,
@@ -27,6 +72,14 @@ export default function DashboardSessionStateCard({
   historyCount,
   phase,
 }) {
+  const canonicalState = latestTurn?.state;
+  const canonicalCommunication = latestTurn?.canonical_communication_state;
+  const canonicalExecution = latestTurn?.execution_state;
+  const reasoningDecision = latestTurn?.reasoning_decision;
+  const reasoningRuns = latestTurn?.reasoning_runs || [];
+  const latestReasoningRun = reasoningRuns.at?.(-1) || null;
+  const flowSteps = buildFlowSteps(canonicalState);
+
   // Communication Agent Logic
   const isCommRunning = phase === "sending" || phase === "starting";
   const commStatus = isCommRunning ? "pending" : (latestTurn ? "active" : "idle");
@@ -35,9 +88,14 @@ export default function DashboardSessionStateCard({
   if (streamStatus === "connecting") commStatusText = "Connecting";
   
   // Bystander Agent Logic
-  const bystanderAvailable = latestTurn?.interaction?.bystander_available;
+  const bystanderAvailable = canonicalCommunication?.bystander_present ?? latestTurn?.interaction?.bystander_available;
   const bystanderCanHelp = latestTurn?.interaction?.bystander_can_help;
   const guidanceSteps = latestTurn?.guidance_steps || [];
+  const currentGuidanceStepIndex = canonicalExecution?.guidance_step_index ?? 0;
+  const currentGuidanceStep =
+    guidanceSteps.length > 0
+      ? guidanceSteps[Math.min(currentGuidanceStepIndex, guidanceSteps.length - 1)]
+      : "";
   let bystanderStatus = "idle";
   let bystanderStatusText = "Standby";
   
@@ -77,7 +135,18 @@ export default function DashboardSessionStateCard({
     ? "Awaiting actionable triggers from the reasoning engine." 
     : "Standing by for emergency action triggers.";
   
-  if (executionUpdates.length > 0 || actionStates.length > 0) {
+  if (canonicalExecution?.dispatch_status === "pending_confirmation") {
+    executionStatus = "pending";
+    executionStatusText = "Countdown";
+    executionActivity = "Dispatch confirmation window is active before emergency services are contacted automatically.";
+  } else if (
+    canonicalExecution?.dispatch_status === "confirmed" ||
+    canonicalExecution?.dispatch_status === "auto_dispatched"
+  ) {
+    executionStatus = "success";
+    executionStatusText = "Dispatched";
+    executionActivity = "Emergency dispatch has been triggered and the execution lane is now active.";
+  } else if (executionUpdates.length > 0 || actionStates.length > 0) {
     const hasPending = executionUpdates.some(u => ["pending_confirmation", "queued"].includes(u.status));
     const hasActive = executionUpdates.some(u => u.status === "active");
     
@@ -90,6 +159,14 @@ export default function DashboardSessionStateCard({
       executionStatusText = "Executed";
       executionActivity = "Response plan actions completed successfully.";
     }
+  }
+
+  if (canonicalExecution?.phase === "guidance" && guidanceSteps.length > 0) {
+    executionStatus = "active";
+    executionStatusText = "Guiding";
+    executionActivity = currentGuidanceStep
+      ? `Running grounded execution guidance. Current step: "${currentGuidanceStep}"`
+      : "Running grounded execution guidance for the decided scenario.";
   }
 
   // Sentinel Agent Logic
@@ -113,6 +190,41 @@ export default function DashboardSessionStateCard({
         </div>
       )}
 
+      <div style={{ marginBottom: 18, padding: 14, borderRadius: 14, border: "1px solid var(--border)", background: "var(--surface)" }}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+          Final Flow Tracker
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
+          {flowSteps.map((step) => (
+            <div
+              key={step.state}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid var(--border)",
+                background:
+                  step.status === "current"
+                    ? "var(--amber-subtle)"
+                    : step.status === "completed"
+                      ? "var(--green-subtle)"
+                      : "var(--surface2)",
+                color:
+                  step.status === "current"
+                    ? "var(--amber)"
+                    : step.status === "completed"
+                      ? "var(--green-dim)"
+                      : "var(--text-sub)",
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                {step.status}
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{step.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Communication Agent */}
       <div className={`agent-card ${isCommRunning ? 'reasoning-pulse-border' : ''}`}>
         <div className="agent-header">
@@ -126,14 +238,23 @@ export default function DashboardSessionStateCard({
             {commStatusText}
           </div>
         </div>
-        <div className="agent-detail">
+          <div className="agent-detail">
           <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Interaction Analysis:</div>
-          <div style={{ marginBottom: 10 }}>Extracting intent, responder availability, and mapping clinical facts.</div>
+          <div style={{ marginBottom: 10 }}>
+            {latestTurn?.canonical_communication_state?.latest_prompt
+              ? `Using AI to interpret the responder, update the canonical state, and drive the next allowed question. Latest prompt: "${latestTurn.canonical_communication_state.latest_prompt}"`
+              : "Using AI to interpret intent, responder role, and which canonical question should come next."}
+          </div>
           
           <div className="agent-meta-row">
             {latestTurn ? (
               <>
                 <span className="tag">Patient Status - {toTitleCase(latestTurn.interaction?.patient_response_status)}</span>
+                <span className="tag">Canonical - {toTitleCase(canonicalState)}</span>
+                <span className="tag">Mode - {toTitleCase(canonicalCommunication?.mode)}</span>
+                <span className="tag">Responder - {toTitleCase(canonicalCommunication?.responder_role)}</span>
+                <span className="tag">Flags - {formatFlags(canonicalCommunication?.flags)}</span>
+                <span className="tag">Patient Replied - {canonicalCommunication?.patient_responded ? "Yes" : "No"}</span>
                 {latestTurn.interaction?.new_fact_keys && latestTurn.interaction.new_fact_keys.length > 0 && (
                    <span className="tag tag-green">New Facts Logged</span>
                 )}
@@ -172,15 +293,37 @@ export default function DashboardSessionStateCard({
                 (bystanderCanHelp ? "Bystander confirmed and capable of providing assistance." : "Bystander present but unable to help.") : 
                 "No capable bystander identified at the scene.")}
           </div>
+
+          {latestTurn && (
+            <div className="agent-meta-row" style={{ marginBottom: guidanceSteps.length > 0 ? 10 : 0 }}>
+              <span className="tag">Bystander - {formatBooleanLabel(bystanderAvailable, "Present", "Absent")}</span>
+              <span className="tag">Help Capacity - {formatBooleanLabel(bystanderCanHelp, "Can Help", "Cannot Help")}</span>
+              <span className="tag">Conscious - {formatBooleanLabel(canonicalCommunication?.conscious, "Yes", "No")}</span>
+              <span className="tag">Breathing - {formatBooleanLabel(canonicalCommunication?.breathing_normal, "Normal", "Abnormal")}</span>
+            </div>
+          )}
           
           {guidanceSteps.length > 0 && (
             <div style={{ marginTop: 10, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "6px", padding: "12px" }}>
               <div style={{ fontSize: 10, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.5px" }}>
-                Immediate Instructions Provided
+                Active Guidance Track
               </div>
               <ul style={{ paddingLeft: 18, margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--text-sub)" }}>
                 {guidanceSteps.map((step, idx) => (
-                  <li key={idx} style={{ marginBottom: 4 }}>{step}</li>
+                  <li
+                    key={idx}
+                    style={{
+                      marginBottom: 4,
+                      color:
+                        canonicalExecution?.phase === "guidance" && idx === currentGuidanceStepIndex
+                          ? "var(--amber)"
+                          : "var(--text-sub)",
+                      fontWeight:
+                        canonicalExecution?.phase === "guidance" && idx === currentGuidanceStepIndex ? 700 : 400,
+                    }}
+                  >
+                    {step}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -220,7 +363,9 @@ export default function DashboardSessionStateCard({
                    )}
                  </>
               ) : (
-                 latestAssessment?.clinical_assessment?.reasoning_summary || "Awaiting significant changes in state or vital signs to run full reasoning refresh."
+                 reasoningDecision?.reason ||
+                 latestAssessment?.clinical_assessment?.reasoning_summary ||
+                 "Awaiting significant changes in state or vital signs to run full reasoning refresh."
               ))
             }
             
@@ -238,11 +383,47 @@ export default function DashboardSessionStateCard({
                 Severity - {formatSeverity(latestAssessment.clinical_assessment?.severity)}
               </span>
               <span className="tag">Confidence - {formatScore(latestAssessment.clinical_assessment?.clinical_confidence_score)}</span>
+              {reasoningDecision?.scenario && (
+                <span className="tag">Scenario - {reasoningDecision.scenario}</span>
+              )}
+              {reasoningDecision?.action && (
+                <span className="tag">Action - {toTitleCase(reasoningDecision.action)}</span>
+              )}
               {latestTurn.reasoning_run_count > 0 && (
                 <span className="tag">Runs: {latestTurn.reasoning_run_count}</span>
               )}
               {latestTurn?.interaction?.reasoning_refresh?.required && (
                 <span className="tag tag-orange">Rerun Queued</span>
+              )}
+            </div>
+          )}
+
+          {reasoningDecision && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                fontSize: 13,
+                color: "var(--text-sub)",
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, color: "var(--text-muted)" }}>
+                Final Decision
+              </div>
+              <div>{reasoningDecision.instructions || reasoningDecision.reason}</div>
+              {reasoningDecision.flags_used?.length > 0 && (
+                <div style={{ marginTop: 6, color: "var(--text-muted)" }}>
+                  Flags used: {formatFlags(reasoningDecision.flags_used)}
+                </div>
+              )}
+              {latestReasoningRun?.trigger && (
+                <div style={{ marginTop: 6, color: "var(--text-muted)" }}>
+                  Latest trigger: {latestReasoningRun.trigger}
+                </div>
               )}
             </div>
           )}
@@ -274,6 +455,30 @@ export default function DashboardSessionStateCard({
         <div className="agent-detail">
           <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Action Dispatcher:</div>
           <div style={{ marginBottom: executionUpdates.length > 0 ? 10 : 0 }}>{executionActivity}</div>
+
+          {canonicalExecution && (
+            <div className="agent-meta-row" style={{ marginTop: 6, gap: 6 }}>
+              <span className="tag">Phase - {toTitleCase(canonicalExecution.phase)}</span>
+              <span className="tag">Dispatch - {toTitleCase(canonicalExecution.dispatch_status)}</span>
+              {canonicalExecution.countdown_seconds != null && (
+                <span className="tag tag-red">T-{canonicalExecution.countdown_seconds}s</span>
+              )}
+              {canonicalExecution.guidance_protocol && (
+                <span className="tag">Protocol - {canonicalExecution.guidance_protocol}</span>
+              )}
+              {guidanceSteps.length > 0 && (
+                <span className="tag">
+                  Step - {Math.min(currentGuidanceStepIndex + 1, guidanceSteps.length)}/{guidanceSteps.length}
+                </span>
+              )}
+              {canonicalExecution.family_notified_initial && (
+                <span className="tag tag-green">Family Alerted</span>
+              )}
+              {canonicalExecution.family_notified_update && (
+                <span className="tag tag-green">Family Updated</span>
+              )}
+            </div>
+          )}
           
           {executionUpdates.length > 0 && (
             <div className="agent-meta-row" style={{ marginTop: 6, gap: 6 }}>
@@ -282,6 +487,26 @@ export default function DashboardSessionStateCard({
                   {toTitleCase(update.type)}
                 </span>
               ))}
+            </div>
+          )}
+
+          {currentGuidanceStep && canonicalExecution?.phase === "guidance" && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                fontSize: 13,
+                color: "var(--text-sub)",
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, color: "var(--text-muted)" }}>
+                Current Execution Step
+              </div>
+              <div>{currentGuidanceStep}</div>
             </div>
           )}
         </div>

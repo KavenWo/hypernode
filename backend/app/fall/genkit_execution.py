@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from agents.shared.schemas import (
     ClinicalAssessmentSummary,
-    ExecutionPlan,
+    ExecutionGuidance,
     PatientAnswer,
     UserMedicalProfile,
 )
@@ -57,7 +57,7 @@ You are the Execution Agent for an emergency fall-response workflow.
 
 You are given an already-decided action. You do NOT perform clinical reasoning.
 You do NOT change severity or re-triage the patient. Your only job is to
-produce a structured execution plan.
+produce narrow structured execution guidance.
 
 Execution rules:
 - Use the execution_grounding tool before producing CPR, airway management,
@@ -89,7 +89,7 @@ Patient profile:
 Conversation context:
 {answers}
 
-Return only a structured execution plan matching the schema.
+Return only structured execution guidance matching the schema.
 """.strip()
 
 
@@ -161,19 +161,27 @@ def _build_grounded_execution_context(
     )
 
 
-def _fallback_execution_plan(
+def _fallback_execution_guidance(
     *,
     action: str,
     clinical_assessment: ClinicalAssessmentSummary,
-) -> ExecutionPlan:
+) -> ExecutionGuidance:
     from app.fall.assessment_service import _build_non_grounded_guidance
 
     fallback_guidance = _build_non_grounded_guidance(
         action=action,
         clinical_assessment=clinical_assessment,
     )
-    return ExecutionPlan(
-        steps=fallback_guidance.steps,
+    fallback_steps = fallback_guidance.steps
+    scenario = (
+        "dispatch_wait"
+        if action in {"dispatch_pending_confirmation", "emergency_dispatch"}
+        else ("family_support" if action == "contact_family" else "monitoring")
+    )
+    return ExecutionGuidance(
+        scenario=scenario,
+        primary_message=fallback_guidance.primary_message or (fallback_steps[0] if fallback_steps else ""),
+        steps=fallback_steps,
         warnings=fallback_guidance.warnings,
         escalation_triggers=fallback_guidance.escalation_triggers,
         quick_replies=["Okay", "Pain worse", "Breathing worse"],
@@ -212,18 +220,26 @@ def _get_genkit_execution_flow():
         )
 
     @ai.flow()
-    async def execution_plan_flow(input_data: GenkitExecutionInput) -> ExecutionPlan:
+    async def execution_plan_flow(input_data: GenkitExecutionInput) -> ExecutionGuidance:
         grounded_context = execution_grounding(input_data)
         response = await ai.generate(
             prompt=_execution_prompt(input_data),
             tools=[execution_grounding],
-            output_schema=ExecutionPlan,
+            output_schema=ExecutionGuidance,
         )
 
-        output: ExecutionPlan | None = getattr(response, "output", None)
+        output: ExecutionGuidance | None = getattr(response, "output", None)
         if output is None:
             raise RuntimeError("Genkit execution flow did not return structured output.")
 
+        if not output.primary_message:
+            output.primary_message = output.steps[0] if output.steps else "Follow the safety guidance."
+        if not output.scenario:
+            output.scenario = grounded_context.protocol_key or (
+                "dispatch_wait"
+                if input_data.action in {"dispatch_pending_confirmation", "emergency_dispatch"}
+                else ("family_support" if input_data.action == "contact_family" else "monitoring")
+            )
         if not output.quick_replies:
             output.quick_replies = (
                 ["Done", "Need next step", "Condition worse"]
@@ -249,7 +265,7 @@ async def run_genkit_execution_plan(
     clinical_assessment: ClinicalAssessmentSummary,
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
-) -> ExecutionPlan:
+) -> ExecutionGuidance:
     """Run the Genkit-backed execution flow with safe fallback semantics."""
 
     try:
@@ -267,21 +283,21 @@ async def run_genkit_execution_plan(
     )
 
     try:
-        plan = await flow(input_data)
+        guidance = await flow(input_data)
         logger.info(
             "[GenkitExecution] Flow succeeded | action=%s severity=%s source=%s protocol=%s",
             action,
             clinical_assessment.severity,
-            plan.source,
-            plan.protocol_key or "none",
+            guidance.source,
+            guidance.protocol_key or "none",
         )
-        return plan
+        return guidance
     except Exception:
         logger.exception(
             "[GenkitExecution] Flow failed; falling back to deterministic execution guidance | action=%s",
             action,
         )
-        return _fallback_execution_plan(
+        return _fallback_execution_guidance(
             action=action,
             clinical_assessment=clinical_assessment,
         )

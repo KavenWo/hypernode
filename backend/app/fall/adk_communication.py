@@ -15,19 +15,17 @@ import re
 from agents.communication.prompts import build_communication_analysis_prompt
 from agents.communication.session_agent import (
     _finalize_analysis_memory,
-    _heuristic_analysis,
 )
 from agents.shared.errors import parse_ai_error
 from agents.shared.schemas import (
     CommunicationAgentAnalysis,
-    ExecutionPlan,
     FallAssessment,
 )
 from app.fall.action_runtime_service import build_visible_execution_state_summary
 
 logger = logging.getLogger(__name__)
 
-ADK_COMMUNICATION_MODEL = os.getenv("ADK_COMMUNICATION_MODEL", "gemini-3-flash-preview")
+ADK_COMMUNICATION_MODEL = os.getenv("ADK_COMMUNICATION_MODEL", "gemini-2.5-flash")
 ADK_COMMUNICATION_APP_NAME = "fall-communication-adk"
 
 COMMUNICATION_AGENT_INSTRUCTION = """
@@ -95,6 +93,112 @@ Return JSON with these fields:
 - immediate_step
 - quick_replies
 """.strip()
+
+
+def _fallback_open_question(previous_analysis: CommunicationAgentAnalysis | None) -> str | None:
+    if previous_analysis and previous_analysis.open_question_key:
+        return previous_analysis.open_question_key
+    return "general_check"
+
+
+def _fallback_role_from_message(latest_message: str) -> tuple[str, bool, bool]:
+    normalized = " ".join((latest_message or "").strip().lower().split())
+    if not normalized:
+        return "unknown", False, False
+    if any(phrase in normalized for phrase in {"i am here", "i'm here", "helping", "with him", "with her", "nearby"}):
+        return "bystander", False, True
+    if any(phrase in normalized for phrase in {"he is", "she is", "they are", "patient is"}):
+        return "bystander", False, True
+    if normalized in {"no response", "not responding"}:
+        return "no_response", False, False
+    return "patient", True, False
+
+
+def _fallback_fact_extraction(latest_message: str) -> list[str]:
+    normalized = " ".join((latest_message or "").strip().lower().split())
+    extracted: list[str] = []
+    if any(phrase in normalized for phrase in {"bleeding", "blood"}):
+        extracted.append("severe_bleeding")
+    if any(phrase in normalized for phrase in {"pain", "hurts", "hurt"}):
+        extracted.append("pain_present")
+    if any(phrase in normalized for phrase in {"can't move", "cannot move", "can't stand", "cannot stand", "unable to move"}):
+        extracted.append("cannot_stand")
+    if any(phrase in normalized for phrase in {"not breathing", "breathing strangely", "breathing abnormal"}):
+        extracted.append("abnormal_breathing")
+    if any(phrase in normalized for phrase in {"unconscious", "not conscious"}):
+        extracted.append("unresponsive")
+    if any(phrase in normalized for phrase in {"awake", "conscious"}):
+        extracted.append("responsive")
+    return extracted
+
+
+def _fallback_prompt_for_question(open_question_key: str | None) -> tuple[str, str, list[str]]:
+    prompt_map = {
+        "general_check": ("Are you okay?", "opening_check", ["Yes", "No", "Need help", "I can answer"]),
+        "consciousness": ("I need to confirm: is the patient conscious?", "consciousness", ["Yes", "No", "Not sure", "Can't tell"]),
+        "breathing": ("I need to confirm: is the patient breathing normally?", "breathing", ["Yes", "No", "Breathing strangely", "Not sure"]),
+        "mobility": ("I need to confirm: is the patient unable to move?", "mobility", ["Yes", "No", "Not sure"]),
+        "bleeding": ("I need to confirm: is the patient bleeding?", "bleeding", ["Yes", "No", "Not sure"]),
+        "pain": ("I need to confirm: is the patient in pain?", "pain", ["Yes", "No", "Not sure"]),
+    }
+    return prompt_map.get(open_question_key or "general_check", prompt_map["general_check"])
+
+
+def _deterministic_fallback_analysis(
+    *,
+    latest_message: str,
+    previous_analysis: CommunicationAgentAnalysis | None = None,
+    ai_error: str | None = None,
+) -> CommunicationAgentAnalysis:
+    if not (latest_message or "").strip():
+        return CommunicationAgentAnalysis(
+            followup_text="Are you okay?",
+            responder_role="unknown",
+            communication_target="patient",
+            patient_responded=False,
+            bystander_present=False,
+            bystander_can_help=False,
+            extracted_facts=[],
+            resolved_fact_keys=[],
+            open_question_key="general_check",
+            open_question_resolved=False,
+            conversation_state_summary="Controlled opening check is active.",
+            reasoning_needed=False,
+            reasoning_reason="The controlled flow starts with the opening check.",
+            should_surface_execution_update=False,
+            guidance_intent="question",
+            next_focus="opening_check",
+            immediate_step=None,
+            quick_replies=["Yes", "No", "Need help", "I can answer"],
+            ai_server_error=ai_error,
+        )
+
+    responder_role, patient_responded, bystander_present = _fallback_role_from_message(latest_message)
+    extracted_facts = _fallback_fact_extraction(latest_message)
+    previous_open_question = _fallback_open_question(previous_analysis)
+    followup_text, next_focus, quick_replies = _fallback_prompt_for_question(previous_open_question)
+
+    return CommunicationAgentAnalysis(
+        followup_text=followup_text,
+        responder_role=responder_role,
+        communication_target="bystander" if bystander_present else ("patient" if patient_responded else "unknown"),
+        patient_responded=patient_responded,
+        bystander_present=bystander_present,
+        bystander_can_help=bystander_present,
+        extracted_facts=extracted_facts,
+        resolved_fact_keys=[],
+        open_question_key=previous_open_question,
+        open_question_resolved=bool(previous_open_question and latest_message.strip()),
+        conversation_state_summary="Deterministic fallback kept the communication in the controlled flow.",
+        reasoning_needed=False,
+        reasoning_reason="Reasoning stays controller-gated in the fallback path.",
+        should_surface_execution_update=False,
+        guidance_intent="question",
+        next_focus=next_focus,
+        immediate_step=None,
+        quick_replies=quick_replies,
+        ai_server_error=ai_error,
+    )
 
 
 def _extract_json_block(text: str) -> str:
@@ -274,6 +378,12 @@ def _normalize_analysis_payload(payload: dict) -> dict:
         value = normalized.get(field)
         if value is None:
             normalized[field] = default
+        elif isinstance(value, str):
+            normalized[field] = value.strip()
+        elif isinstance(value, (dict, list)):
+            normalized[field] = json.dumps(value)
+        else:
+            normalized[field] = str(value).strip()
 
     return normalized
 
@@ -336,7 +446,6 @@ async def analyze_communication_turn_with_adk(
     previous_assessment: FallAssessment | None,
     previous_analysis: CommunicationAgentAnalysis | None = None,
     pending_reasoning_context: str = "",
-    execution_plan: ExecutionPlan | None = None,
     execution_updates: list | None = None,
     acknowledged_reasoning_triggers: set[str] | None = None,
 ) -> CommunicationAgentAnalysis:
@@ -346,11 +455,9 @@ async def analyze_communication_turn_with_adk(
         logger.info(
             "[AdkCommunication] Empty bootstrap turn detected; using deterministic opening prompt."
         )
-        return _heuristic_analysis(
+        return _deterministic_fallback_analysis(
             latest_message="",
-            previous_assessment=previous_assessment,
             previous_analysis=previous_analysis,
-            acknowledged_reasoning_triggers=acknowledged_reasoning_triggers,
             ai_error=None,
         )
 
@@ -358,12 +465,6 @@ async def analyze_communication_turn_with_adk(
     assessment_summary = _summarize_assessment(previous_assessment)
     if pending_reasoning_context:
         assessment_summary += f"\n[Background reasoning update]: {pending_reasoning_context}"
-    if execution_plan and execution_plan.steps:
-        assessment_summary += (
-            "\n[Execution plan available]: "
-            f"Next step: {execution_plan.steps[0]} "
-            "(deliver one step at a time, ask for confirmation before proceeding)"
-        )
 
     prompt = build_communication_analysis_prompt(
         event_summary=event_summary,
@@ -397,13 +498,15 @@ async def analyze_communication_turn_with_adk(
         return finalized
     except Exception as exc:
         logger.exception(
-            "[AdkCommunication] Agent failed; falling back to heuristic communication | user=%s",
+            "[AdkCommunication] Agent failed; falling back to deterministic controlled communication | user=%s",
             event.user_id,
         )
-        return _heuristic_analysis(
+        fallback = _deterministic_fallback_analysis(
             latest_message=latest_message,
-            previous_assessment=previous_assessment,
             previous_analysis=previous_analysis,
-            acknowledged_reasoning_triggers=acknowledged_reasoning_triggers,
             ai_error=parse_ai_error(exc),
+        )
+        return _finalize_analysis_memory(
+            analysis=fallback,
+            previous_analysis=previous_analysis,
         )

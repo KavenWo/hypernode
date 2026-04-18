@@ -67,6 +67,8 @@ export default function DashboardConversationPanel({
 }) {
   const hasAssistantMessage = messages.some((message) => message.role === "assistant" && message.text?.trim());
   const isAgentTyping = phase === "sending" || (phase === "starting" && !hasAssistantMessage);
+  const canonicalState = latestTurn?.state;
+  const latestPrompt = latestTurn?.canonical_communication_state?.latest_prompt;
   const streamEndRef = useRef(null);
 
   useEffect(() => {
@@ -83,6 +85,41 @@ export default function DashboardConversationPanel({
           <span className="tag">Mode - {latestTurn.interaction.interaction_mode}</span>
           <span className="tag">Style - {latestTurn.interaction.guidance_style}</span>
           <span className="tag">Reasoning - {latestTurn.reasoning_status || "idle"}</span>
+          {canonicalState && <span className="tag">State - {canonicalState}</span>}
+        </div>
+      )}
+
+      {latestPrompt && (
+        <div
+          style={{
+            marginBottom: 14,
+            padding: "10px 12px",
+            borderRadius: 12,
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            fontSize: 13,
+            color: "var(--text-sub)",
+            lineHeight: 1.6,
+          }}
+        >
+          <strong style={{ color: "var(--text)" }}>Current Prompt:</strong> {latestPrompt}
+        </div>
+      )}
+
+      {canonicalState === "optional_flags_check" && (
+        <div
+          style={{
+            marginBottom: 14,
+            padding: "10px 12px",
+            borderRadius: 12,
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            fontSize: 13,
+            color: "var(--text-sub)",
+            lineHeight: 1.6,
+          }}
+        >
+          <strong style={{ color: "var(--text)" }}>Signal Extraction:</strong> At this step the communication agent is still using AI to interpret the reply, but it is only collecting the allowed flags: bleeding, pain, or mobility issues.
         </div>
       )}
 
@@ -120,7 +157,7 @@ export default function DashboardConversationPanel({
                 }
               }
             }}
-            placeholder="Type what the patient or bystander says next..."
+            placeholder={latestPrompt || "Type what the patient or bystander says next..."}
           />
         </div>
 

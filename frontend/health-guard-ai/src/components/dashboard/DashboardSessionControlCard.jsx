@@ -48,7 +48,7 @@ export default function DashboardSessionControlCard({
       </div>
 
       <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.6, marginTop: 10 }}>
-        Start a session to let the communication agent decide who to address next, when to refresh reasoning, and whether escalation is warranted from the selected profile plus current vitals.
+        Start a session to run the controlled fall flow: opening check, bystander check, consciousness, breathing, optional flags, reasoning, then deterministic execution.
       </div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>

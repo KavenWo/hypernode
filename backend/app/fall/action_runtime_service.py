@@ -19,9 +19,13 @@ from app.fall.assessment_service import (
 )
 from app.fall.contracts import (
     ActionStateSummary,
+    CommunicationState,
+    DispatchStatus,
     ExecutionUpdate,
+    ExecutionState,
     FallAssessment,
     PatientAnswer,
+    SessionState,
     SessionActionResponse,
 )
 from app.fall.execution_service import trigger_emergency
@@ -149,6 +153,170 @@ def _cancel_dispatch_confirmation_task(session_id: str) -> None:
         task.cancel()
 
 
+def _remaining_countdown_seconds(deadline: datetime | None, *, now: datetime | None = None) -> int | None:
+    if deadline is None:
+        return None
+    current_time = now or datetime.utcnow()
+    return max(1, int((deadline - current_time).total_seconds()))
+
+
+def _sync_canonical_execution_snapshot(session_id: str, *, session) -> None:
+    """Mirror deterministic action-state facts into the canonical execution state."""
+
+    previous_execution = session.execution_state or ExecutionState()
+    action_map = {
+        item.action_type: item
+        for item in session.action_states
+    }
+    family_state = action_map.get("contact_family")
+    dispatch_state = action_map.get("emergency_dispatch")
+
+    dispatch_status = previous_execution.dispatch_status
+    phase = previous_execution.phase
+    countdown_seconds = previous_execution.countdown_seconds
+
+    if dispatch_state is not None:
+        if dispatch_state.status == "pending_confirmation":
+            dispatch_status = DispatchStatus.PENDING_CONFIRMATION
+            phase = "dispatch_countdown"
+            countdown_seconds = _remaining_countdown_seconds(dispatch_state.confirmation_deadline)
+        elif dispatch_state.status == "completed":
+            dispatch_status = (
+                DispatchStatus.CONFIRMED
+                if dispatch_state.confirmation_status == "confirmed"
+                else DispatchStatus.AUTO_DISPATCHED
+            )
+            phase = "dispatch_triggered"
+            countdown_seconds = None
+        elif dispatch_state.status == "cancelled":
+            dispatch_status = DispatchStatus.CANCELLED
+            phase = "guidance"
+            countdown_seconds = None
+        elif dispatch_state.desired:
+            dispatch_status = DispatchStatus.PENDING_CONFIRMATION
+            phase = "dispatch_countdown"
+            countdown_seconds = _remaining_countdown_seconds(dispatch_state.confirmation_deadline)
+        else:
+            dispatch_status = DispatchStatus.NOT_REQUESTED
+            if phase == "dispatch_countdown":
+                phase = "guidance"
+            countdown_seconds = None
+
+    family_notified_initial = previous_execution.family_notified_initial
+    family_notified_update = previous_execution.family_notified_update
+    if family_state is not None and family_state.status == "completed":
+        family_notified_initial = True
+        family_notified_update = family_state.occurrence_count > 1
+
+    fall_session_store.store_canonical_flow_state(
+        session_id=session_id,
+        execution_state=ExecutionState(
+            phase=phase,
+            countdown_seconds=countdown_seconds,
+            family_notified_initial=family_notified_initial,
+            family_notified_update=family_notified_update,
+            dispatch_status=dispatch_status,
+            guidance_protocol=previous_execution.guidance_protocol,
+            guidance_step_index=previous_execution.guidance_step_index,
+        ),
+    )
+
+
+def _store_canonical_dispatch_state(
+    session_id: str,
+    *,
+    session,
+    state: SessionState,
+    latest_prompt: str,
+    dispatch_status: DispatchStatus,
+    phase: str,
+    countdown_seconds: int | None,
+) -> None:
+    previous_comm = session.canonical_communication_state
+    previous_execution = session.execution_state or ExecutionState()
+
+    fall_session_store.store_canonical_flow_state(
+        session_id=session_id,
+        state=state,
+        communication_state=CommunicationState(
+            session_id=session_id,
+            state=state,
+            mode=previous_comm.mode if previous_comm is not None else "patient_only",
+            responder_role=previous_comm.responder_role if previous_comm is not None else "unknown",
+            patient_responded=previous_comm.patient_responded if previous_comm is not None else False,
+            bystander_present=previous_comm.bystander_present if previous_comm is not None else False,
+            conscious=previous_comm.conscious if previous_comm is not None else None,
+            breathing_normal=previous_comm.breathing_normal if previous_comm is not None else None,
+            flags=list(previous_comm.flags) if previous_comm is not None else [],
+            latest_prompt=latest_prompt,
+            latest_message=previous_comm.latest_message if previous_comm is not None else "",
+            reasoning_call_count=previous_comm.reasoning_call_count if previous_comm is not None else 0,
+        ),
+        reasoning_decision=session.reasoning_decision,
+        execution_state=ExecutionState(
+            phase=phase,
+            countdown_seconds=countdown_seconds,
+            family_notified_initial=previous_execution.family_notified_initial,
+            family_notified_update=previous_execution.family_notified_update,
+            dispatch_status=dispatch_status,
+            guidance_protocol=previous_execution.guidance_protocol,
+            guidance_step_index=previous_execution.guidance_step_index,
+        ),
+    )
+
+
+def _sync_canonical_dispatch_pending(session_id: str, *, session, dispatch_state: ActionStateSummary) -> None:
+    if dispatch_state.status != "pending_confirmation":
+        return
+    _store_canonical_dispatch_state(
+        session_id,
+        session=session,
+        state=SessionState.AWAITING_DISPATCH_CONFIRMATION,
+        latest_prompt="Emergency help is preparing to be dispatched.",
+        dispatch_status=DispatchStatus.PENDING_CONFIRMATION,
+        phase="dispatch_countdown",
+        countdown_seconds=_remaining_countdown_seconds(dispatch_state.confirmation_deadline),
+    )
+
+
+def _sync_canonical_dispatch_executed(
+    session_id: str,
+    *,
+    session,
+    confirmation_status: str,
+) -> None:
+    latest_prompt = "Emergency help has been called."
+    dispatch_status = (
+        DispatchStatus.CONFIRMED
+        if confirmation_status == "confirmed"
+        else DispatchStatus.AUTO_DISPATCHED
+    )
+    _store_canonical_dispatch_state(
+        session_id,
+        session=session,
+        state=SessionState.EXECUTION_IN_PROGRESS,
+        latest_prompt=latest_prompt,
+        dispatch_status=dispatch_status,
+        phase="dispatch_triggered",
+        countdown_seconds=None,
+    )
+
+
+def _sync_canonical_dispatch_cancelled(session_id: str, *, session) -> None:
+    fallback_prompt = "Emergency dispatch was cancelled. Continue monitoring closely."
+    if session.reasoning_decision and session.reasoning_decision.instructions:
+        fallback_prompt = session.reasoning_decision.instructions
+    _store_canonical_dispatch_state(
+        session_id,
+        session=session,
+        state=SessionState.EXECUTION_IN_PROGRESS,
+        latest_prompt=fallback_prompt,
+        dispatch_status=DispatchStatus.CANCELLED,
+        phase="guidance",
+        countdown_seconds=None,
+    )
+
+
 async def _execute_dispatch_action(session_id: str, *, confirmation_status: str) -> ActionStateSummary | None:
     session = fall_session_store.get_session(session_id)
     if session is None or session.latest_assessment is None:
@@ -219,6 +387,16 @@ async def _execute_dispatch_action(session_id: str, *, confirmation_status: str)
         }
     )
     fall_session_store.set_latest_assessment(session_id=session_id, assessment=updated_assessment)
+    refreshed_session = fall_session_store.get_session(session_id)
+    if refreshed_session is not None:
+        _sync_canonical_dispatch_executed(
+            session_id,
+            session=refreshed_session,
+            confirmation_status=confirmation_status,
+        )
+        latest_session = fall_session_store.get_session(session_id)
+        if latest_session is not None:
+            _sync_canonical_execution_snapshot(session_id, session=latest_session)
     return completed_state
 
 
@@ -246,6 +424,13 @@ def sync_dispatch_confirmation_task(session_id: str) -> None:
     if dispatch_state is None or dispatch_state.status != "pending_confirmation" or dispatch_state.confirmation_deadline is None:
         _cancel_dispatch_confirmation_task(session_id)
         return
+
+    session = fall_session_store.get_session(session_id)
+    if session is not None:
+        _sync_canonical_dispatch_pending(session_id, session=session, dispatch_state=dispatch_state)
+        latest_session = fall_session_store.get_session(session_id)
+        if latest_session is not None:
+            _sync_canonical_execution_snapshot(session_id, session=latest_session)
 
     existing_task = _dispatch_confirmation_tasks.get(session_id)
     if existing_task is not None and not existing_task.done():
@@ -472,6 +657,29 @@ def sync_action_state_with_assessment(
         action_states=ordered_states,
         execution_updates=execution_updates,
     )
+    refreshed_session = fall_session_store.get_session(session_id)
+    if refreshed_session is not None:
+        _sync_canonical_execution_snapshot(session_id, session=refreshed_session)
+        refreshed_session = fall_session_store.get_session(session_id) or refreshed_session
+        refreshed_dispatch_state = next(
+            (item for item in refreshed_session.action_states if item.action_type == "emergency_dispatch"),
+            None,
+        )
+        if refreshed_dispatch_state is not None:
+            if refreshed_dispatch_state.status == "pending_confirmation":
+                _sync_canonical_dispatch_pending(
+                    session_id,
+                    session=refreshed_session,
+                    dispatch_state=refreshed_dispatch_state,
+                )
+            elif refreshed_dispatch_state.status == "completed":
+                _sync_canonical_dispatch_executed(
+                    session_id,
+                    session=refreshed_session,
+                    confirmation_status=refreshed_dispatch_state.confirmation_status or "confirmed",
+                )
+            elif refreshed_dispatch_state.status == "cancelled":
+                _sync_canonical_dispatch_cancelled(session_id, session=refreshed_session)
     return ordered_states, execution_updates
 
 
@@ -528,6 +736,12 @@ async def apply_session_action_decision(
             action_states=_ordered_action_states(state_map),
             execution_updates=execution_updates,
         )
+        refreshed_session = fall_session_store.get_session(session_id)
+        if refreshed_session is not None:
+            _sync_canonical_dispatch_cancelled(session_id, session=refreshed_session)
+            latest_session = fall_session_store.get_session(session_id)
+            if latest_session is not None:
+                _sync_canonical_execution_snapshot(session_id, session=latest_session)
     else:
         raise ValueError(f"Unsupported decision: {decision}")
 
@@ -538,6 +752,10 @@ async def apply_session_action_decision(
         session_id=session_id,
         action_state=updated_state,
         execution_updates=latest_session.execution_updates,
+        state=latest_session.state,
+        canonical_communication_state=latest_session.canonical_communication_state,
+        reasoning_decision=latest_session.reasoning_decision,
+        execution_state=latest_session.execution_state,
     )
 
 

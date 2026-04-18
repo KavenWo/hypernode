@@ -19,7 +19,7 @@ import logging
 
 from agents.shared.schemas import (
     ClinicalAssessmentSummary,
-    ExecutionPlan,
+    ExecutionGuidance,
     PatientAnswer,
     UserMedicalProfile,
 )
@@ -50,8 +50,8 @@ async def run_execution_grounding(
     clinical_assessment: ClinicalAssessmentSummary,
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
-) -> ExecutionPlan:
-    """Retrieve grounded guidance and build a step-by-step execution plan.
+) -> ExecutionGuidance:
+    """Retrieve grounded guidance and build a narrow execution-guidance payload.
 
     This function owns all guidance/protocol Vertex AI Search queries. It
     imports the retrieval functions lazily to keep the module boundary clean
@@ -121,7 +121,18 @@ async def run_execution_grounding(
             retrieval_result.get("retrieval_source", "unknown"),
         )
 
-        return ExecutionPlan(
+        primary_message = (
+            "Start CPR now."
+            if protocol_guidance.protocol_key == "cpr"
+            else (
+                steps[0]
+                if steps
+                else "Follow the grounded safety guidance while help is on the way."
+            )
+        )
+        return ExecutionGuidance(
+            scenario=protocol_guidance.protocol_key or ("dispatch_wait" if action in {"dispatch_pending_confirmation", "emergency_dispatch"} else "guided_support"),
+            primary_message=primary_message,
             steps=steps,
             warnings=warnings,
             escalation_triggers=escalation_triggers,
@@ -140,8 +151,17 @@ async def run_execution_grounding(
         clinical_assessment=clinical_assessment,
     )
 
-    return ExecutionPlan(
-        steps=fallback_guidance.steps,
+    fallback_steps = fallback_guidance.steps
+    fallback_message = fallback_guidance.primary_message or (fallback_steps[0] if fallback_steps else "")
+    scenario = (
+        "dispatch_wait"
+        if action in {"dispatch_pending_confirmation", "emergency_dispatch"}
+        else ("family_support" if action == "contact_family" else "monitoring")
+    )
+    return ExecutionGuidance(
+        scenario=scenario,
+        primary_message=fallback_message,
+        steps=fallback_steps,
         warnings=fallback_guidance.warnings,
         escalation_triggers=fallback_guidance.escalation_triggers,
         quick_replies=["Okay", "Pain worse", "Breathing worse"],

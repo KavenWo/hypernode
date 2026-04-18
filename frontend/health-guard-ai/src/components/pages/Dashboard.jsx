@@ -315,6 +315,11 @@ export default function Dashboard({
         : current.guidance_steps || [];
       return {
         ...current,
+        state: payload.state ?? current.state,
+        canonical_communication_state:
+          payload.canonical_communication_state || current.canonical_communication_state,
+        reasoning_decision: payload.reasoning_decision || current.reasoning_decision,
+        execution_state: payload.execution_state || current.execution_state,
         interaction: payload.interaction || current.interaction,
         communication_analysis: nextAnalysis,
         reasoning_status: payload.reasoning_status,

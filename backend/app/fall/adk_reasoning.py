@@ -33,7 +33,7 @@ from agents.shared.schemas import (
 
 logger = logging.getLogger(__name__)
 
-ADK_REASONING_MODEL = os.getenv("ADK_REASONING_MODEL", "gemini-3-pro-preview")
+ADK_REASONING_MODEL = os.getenv("ADK_REASONING_MODEL", "gemini-2.5-pro")
 ADK_REASONING_APP_NAME = "fall-reasoning-adk"
 
 

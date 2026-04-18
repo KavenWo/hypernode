@@ -11,7 +11,6 @@ from agents.shared.schemas import (
     CommunicationAgentAnalysis,
     CommunicationState,
     ConversationMessage,
-    ExecutionPlan,
     ExecutionState,
     ExecutionUpdate,
     FallAssessment,
@@ -57,7 +56,6 @@ class FallSessionRecord:
     reasoning_runs: list[ReasoningRunSummary] = field(default_factory=list)
     announced_execution_types: set[str] = field(default_factory=set)
     pending_reasoning_context: str = ""
-    latest_execution_plan: ExecutionPlan | None = None
 
 
 class FallSessionStore:
@@ -362,6 +360,10 @@ class FallSessionStore:
             if record is None:
                 return None
             record.active_protocol_step_index = max(0, step_index)
+            if record.execution_state is not None:
+                record.execution_state = record.execution_state.model_copy(
+                    update={"guidance_step_index": max(0, step_index)}
+                )
             self._touch_locked(record)
             return self._copy_record(record)
 
@@ -390,33 +392,27 @@ class FallSessionStore:
             self._touch_locked(record)
             return self._copy_record(record)
 
-    def store_execution_plan(self, session_id: str, execution_plan: ExecutionPlan) -> FallSessionRecord | None:
-        """Store a completed execution plan from the execution agent."""
+    def consume_pending_context(self, session_id: str) -> str:
+        """Read and clear the one-time reasoning context for the next turn."""
+        with self._lock:
+            record = self._sessions.get(session_id)
+            if record is None:
+                return ""
+            context = record.pending_reasoning_context
+            record.pending_reasoning_context = ""
+            if context:
+                self._touch_locked(record)
+            return context
+
+    def store_pending_context(self, *, session_id: str, context: str) -> FallSessionRecord | None:
+        """Update the one-time communication context without mutating reasoning state."""
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
                 return None
-            record.latest_execution_plan = execution_plan.model_copy(deep=True)
+            record.pending_reasoning_context = context
             self._touch_locked(record)
             return self._copy_record(record)
-
-    def consume_pending_context(self, session_id: str) -> tuple[str, ExecutionPlan | None]:
-        """Read and clear pending reasoning context and execution plan.
-
-        Called at the start of each communication turn so the communication
-        agent gets enriched context exactly once.
-        """
-        with self._lock:
-            record = self._sessions.get(session_id)
-            if record is None:
-                return "", None
-            context = record.pending_reasoning_context
-            plan = record.latest_execution_plan
-            record.pending_reasoning_context = ""
-            record.latest_execution_plan = None
-            if context or plan:
-                self._touch_locked(record)
-            return context, plan.model_copy(deep=True) if plan else None
 
     def fail_reasoning(self, *, session_id: str, error_message: str) -> bool:
         with self._lock:
@@ -499,7 +495,6 @@ class FallSessionStore:
             reasoning_runs=[item.model_copy(deep=True) for item in record.reasoning_runs],
             announced_execution_types=set(record.announced_execution_types),
             pending_reasoning_context=record.pending_reasoning_context,
-            latest_execution_plan=record.latest_execution_plan.model_copy(deep=True) if record.latest_execution_plan else None,
         )
 
 

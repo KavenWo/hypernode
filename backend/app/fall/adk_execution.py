@@ -17,14 +17,14 @@ from functools import lru_cache
 
 from agents.shared.schemas import (
     ClinicalAssessmentSummary,
-    ExecutionPlan,
+    ExecutionGuidance,
     PatientAnswer,
     UserMedicalProfile,
 )
 
 logger = logging.getLogger(__name__)
 
-ADK_EXECUTION_MODEL = os.getenv("ADK_EXECUTION_MODEL", "gemini-3-flash-preview")
+ADK_EXECUTION_MODEL = os.getenv("ADK_EXECUTION_MODEL", "gemini-2.5-flash")
 ADK_EXECUTION_APP_NAME = "fall-execution-adk"
 
 EXECUTION_AGENT_INSTRUCTION = """
@@ -64,6 +64,8 @@ Hard boundaries:
 
 Output contract:
 Return JSON only with these fields:
+- scenario: stable execution scenario such as cpr, dispatch_wait, family_support, or monitoring
+- primary_message: short responder-facing instruction for the current execution phase
 - steps: ordered list of step-by-step actions
 - warnings: short list of safety warnings
 - escalation_triggers: short list of conditions that should trigger escalation or a status update
@@ -72,6 +74,8 @@ Return JSON only with these fields:
 - source: one of grounded, non_grounded, or another clearly labeled execution source
 
 Field rules:
+- scenario: keep it stable and short
+- primary_message: one short sentence
 - steps: 2 to 6 items when possible; each item should be a single action
 - warnings: only include concrete safety warnings
 - escalation_triggers: include only meaningful worsening conditions or completion checkpoints
@@ -151,27 +155,37 @@ def _extract_json_block(text: str) -> str:
     raise ValueError("ADK execution response did not contain a JSON object.")
 
 
-def _normalize_execution_plan(plan: ExecutionPlan) -> ExecutionPlan:
-    if not plan.quick_replies:
-        plan.quick_replies = ["Done", "Need next step", "Condition worse"]
-    if not plan.source:
-        plan.source = "grounded"
-    return plan
+def _normalize_execution_guidance(guidance: ExecutionGuidance) -> ExecutionGuidance:
+    if not guidance.quick_replies:
+        guidance.quick_replies = ["Done", "Need next step", "Condition worse"]
+    if not guidance.primary_message:
+        guidance.primary_message = guidance.steps[0] if guidance.steps else "Follow the safety guidance."
+    if not guidance.source:
+        guidance.source = "grounded"
+    return guidance
 
 
-def _fallback_execution_plan(
+def _fallback_execution_guidance(
     *,
     action: str,
     clinical_assessment: ClinicalAssessmentSummary,
-) -> ExecutionPlan:
+) -> ExecutionGuidance:
     from app.fall.assessment_service import _build_non_grounded_guidance
 
     fallback_guidance = _build_non_grounded_guidance(
         action=action,
         clinical_assessment=clinical_assessment,
     )
-    return ExecutionPlan(
-        steps=fallback_guidance.steps,
+    fallback_steps = fallback_guidance.steps
+    scenario = (
+        "dispatch_wait"
+        if action in {"dispatch_pending_confirmation", "emergency_dispatch"}
+        else ("family_support" if action == "contact_family" else "monitoring")
+    )
+    return ExecutionGuidance(
+        scenario=scenario,
+        primary_message=fallback_guidance.primary_message or (fallback_steps[0] if fallback_steps else ""),
+        steps=fallback_steps,
         warnings=fallback_guidance.warnings,
         escalation_triggers=fallback_guidance.escalation_triggers,
         quick_replies=["Okay", "Pain worse", "Breathing worse"],
@@ -279,7 +293,7 @@ async def run_adk_execution_plan(
     clinical_assessment: ClinicalAssessmentSummary,
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
-) -> ExecutionPlan:
+) -> ExecutionGuidance:
     """Run the ADK-backed execution agent with safe fallback semantics."""
 
     if not _should_use_adk_execution(
@@ -292,7 +306,7 @@ async def run_adk_execution_plan(
             action,
             clinical_assessment.severity,
         )
-        return _fallback_execution_plan(
+        return _fallback_execution_guidance(
             action=action,
             clinical_assessment=clinical_assessment,
         )
@@ -306,22 +320,22 @@ async def run_adk_execution_plan(
 
     try:
         response_text = await _run_agent_prompt(prompt)
-        plan = ExecutionPlan.model_validate(json.loads(_extract_json_block(response_text)))
-        plan = _normalize_execution_plan(plan)
+        guidance = ExecutionGuidance.model_validate(json.loads(_extract_json_block(response_text)))
+        guidance = _normalize_execution_guidance(guidance)
         logger.info(
             "[AdkExecution] Agent succeeded | action=%s severity=%s source=%s protocol=%s",
             action,
             clinical_assessment.severity,
-            plan.source,
-            plan.protocol_key or "none",
+            guidance.source,
+            guidance.protocol_key or "none",
         )
-        return plan
+        return guidance
     except Exception:
         logger.exception(
             "[AdkExecution] Agent failed; falling back to deterministic execution guidance | action=%s",
             action,
         )
-        return _fallback_execution_plan(
+        return _fallback_execution_guidance(
             action=action,
             clinical_assessment=clinical_assessment,
         )

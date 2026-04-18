@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import MvpTestPage from "./components/MvpTestPage.jsx";
 import Sidebar from "./components/layout/Sidebar";
 import Dashboard from "./components/pages/Dashboard";
 import ProfilePage from "./components/pages/ProfilePage";
@@ -17,6 +16,7 @@ export default function App() {
   const [authStatus, setAuthStatus] = useState("checking");
   const [authError, setAuthError] = useState("");
   const [authSession, setAuthSession] = useState(null);
+  const [dataStatus, setDataStatus] = useState("idle"); // 'idle' | 'loading' | 'ready' | 'error'
   const [patientProfiles, setPatientProfiles] = useState([]);
   const [currentPatientId, setCurrentPatientId] = useState("");
 
@@ -65,17 +65,22 @@ export default function App() {
   async function handleWelcomeContinue() {
     setAuthStatus("signing_in");
     setAuthError("");
+    setDataStatus("loading");
     try {
       const session = await bootstrapAnonymousSession(null);
+      // Fast-track the UI to ready state as soon as we have a session
       setAuthSession(session);
+      setAuthStatus("ready");
+
       if (session.patients?.length) {
         const normalized = session.patients.map(normalizePatientProfile);
         setPatientProfiles(normalized);
         setCurrentPatientId(session.patientId || normalized[0]?.patientId || "");
+        setDataStatus("ready");
       }
-      setAuthStatus("ready");
     } catch (error) {
       setAuthStatus("awaiting_user");
+      setDataStatus("error");
       setAuthError(error.message || "Unable to start the anonymous session.");
     }
   }
@@ -83,39 +88,66 @@ export default function App() {
   const showWelcomeModal = authStatus !== "ready";
 
   useEffect(() => {
-    let cancelled = false;
+    let isMounted = true;
 
     async function hydrateSessionData() {
       const sessionUid = authSession?.backendSession?.session_uid;
-      if (!sessionUid) {
-        return;
+      if (!sessionUid) return;
+      
+      setDataStatus("loading");
+      
+      const maxAttempts = 10;
+      let attempt = 0;
+      
+      while (attempt < maxAttempts) {
+        if (!isMounted) break;
+
+        try {
+          const startTime = Date.now();
+          const [patients, history] = await Promise.all([
+            fetchSessionPatients(sessionUid),
+            fetchSessionHistory(sessionUid),
+          ]);
+          
+          if (!isMounted) break;
+
+          if (patients.length > 0) {
+            setPatientProfiles(patients);
+            setHistoryLog(history);
+            if (patients[0]?.patientId) {
+              setCurrentPatientId(patients[0].patientId);
+            }
+            setDataStatus("ready");
+            return;
+          }
+          
+          attempt++;
+          const elapsed = Date.now() - startTime;
+          const waitTime = Math.max(500, 1500 - elapsed);
+          
+          if (attempt < maxAttempts && isMounted) {
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+          }
+        } catch (err) {
+          console.error("Hydration attempt failed:", err);
+          attempt++;
+          if (attempt >= maxAttempts) {
+            if (isMounted) setDataStatus("error");
+          } else if (isMounted) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
       }
-
-      try {
-        const [patients, history] = await Promise.all([
-          fetchSessionPatients(sessionUid),
-          fetchSessionHistory(sessionUid),
-        ]);
-
-        if (cancelled) {
-          return;
-        }
-
-        setPatientProfiles(patients);
-        setCurrentPatientId((current) => current || authSession.patientId || patients[0]?.patientId || "");
-        setHistoryLog(history);
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        console.error("Failed to hydrate session data", error);
+      
+      if (isMounted && attempt >= maxAttempts) {
+        setDataStatus("ready"); 
       }
     }
 
     hydrateSessionData();
 
     return () => {
-      cancelled = true;
+      isMounted = false;
     };
   }, [authSession]);
 
@@ -124,6 +156,15 @@ export default function App() {
       <div className="app">
         <Sidebar page={page} setPage={setPage} />
         <div className="main">
+          {dataStatus === "loading" && !showWelcomeModal && (
+            <div className="app-hydration-toast">
+              <div className="toast-spinner"></div>
+              <div className="toast-content">
+                <div className="toast-title">Syncing Clinical Data</div>
+                <div className="toast-sub">Updating patient profiles...</div>
+              </div>
+            </div>
+          )}
           {page === PAGES.DASHBOARD && (
             <Dashboard
               onNavigate={setPage}
@@ -133,9 +174,9 @@ export default function App() {
               patientProfiles={patientProfiles}
               currentPatientId={currentPatientId}
               onSelectPatient={setCurrentPatientId}
+              dataStatus={dataStatus}
             />
           )}
-          {page === PAGES.MVP_TEST && <MvpTestPage />}
           {page === PAGES.PROFILE && (
             <ProfilePage
               patientProfiles={patientProfiles}

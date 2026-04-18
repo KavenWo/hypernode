@@ -1,12 +1,11 @@
 import { PAGES } from "../../constants/pages";
 
 export default function Sidebar({ page, setPage }) {
-  const navItems = [
-    { id: PAGES.MVP_TEST, icon: "🧪", label: "MVP Test" },
+const navItems = [
     { id: PAGES.DASHBOARD, icon: "💓", label: "Dashboard" },
     { id: PAGES.PROFILE, icon: "👤", label: "Profile" },
     { id: PAGES.HISTORY, icon: "📋", label: "History" },
-  ];
+];
 
   return (
     <div className="sidebar">

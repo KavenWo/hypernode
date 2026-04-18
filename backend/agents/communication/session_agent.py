@@ -9,7 +9,7 @@ from google.genai import errors, types
 
 from agents.shared.config import COMMUNICATION_FALLBACK_MODELS
 from agents.shared.errors import parse_ai_error
-from agents.shared.schemas import CommunicationAgentAnalysis, ExecutionPlan, FallAssessment
+from agents.shared.schemas import CommunicationAgentAnalysis, FallAssessment
 from app.fall.action_runtime_service import build_visible_execution_state_summary
 
 from .prompts import build_communication_analysis_prompt, build_communication_render_prompt
@@ -448,7 +448,6 @@ async def analyze_communication_turn(
     previous_assessment: FallAssessment | None,
     previous_analysis: CommunicationAgentAnalysis | None = None,
     pending_reasoning_context: str = "",
-    execution_plan: ExecutionPlan | None = None,
     execution_updates: list | None = None,
     acknowledged_reasoning_triggers: set[str] | None = None,
 ) -> CommunicationAgentAnalysis:
@@ -461,9 +460,6 @@ async def analyze_communication_turn(
     assessment_summary = _summarize_assessment(previous_assessment)
     if pending_reasoning_context:
         assessment_summary += f"\n[Background reasoning update]: {pending_reasoning_context}"
-    if execution_plan and execution_plan.steps:
-        step_preview = execution_plan.steps[0]
-        assessment_summary += f"\n[Execution plan available]: Next step: {step_preview} (deliver one step at a time, ask for confirmation before proceeding)"
 
     prompt = build_communication_analysis_prompt(
         event_summary=event_summary,

@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +27,9 @@ except ImportError:  # pragma: no cover - optional during early local setup
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 SAMPLE_PATIENT_PATH = BACKEND_DIR / "data" / "sample_patient.json"
 logger = logging.getLogger(__name__)
+
+# Global thread pool for I/O bound Firestore operations
+_executor = ThreadPoolExecutor(max_workers=10)
 
 
 def _configured_project_id() -> str:
@@ -131,7 +136,7 @@ def _seeded_frontend_profiles(session_uid: str) -> list[FrontendPatientProfile]:
     return [_frontend_profile_from_sample(sample, session_uid) for sample in sample_profiles]
 
 
-def _write_session_patient_profile(profile: FrontendPatientProfile) -> FrontendPatientProfile:
+def _write_session_patient_profile(profile: FrontendPatientProfile, batch=None) -> FrontendPatientProfile:
     session_ref = _session_document(profile.session_uid or "")
     if session_ref is None:
         return profile
@@ -140,16 +145,31 @@ def _write_session_patient_profile(profile: FrontendPatientProfile) -> FrontendP
     base_payload = profile.model_dump(mode="json")
     base_payload.pop("medical_profile", None)
     base_payload.pop("emergency_contacts", None)
-    patient_ref.set(base_payload, merge=True)
-    patient_ref.collection("medical_profile").document("current").set(
-        _model_payload(profile.medical_profile),
-        merge=True,
-    )
-    for contact in profile.emergency_contacts:
-        patient_ref.collection("emergency_contacts").document(contact.contact_id).set(
-            _model_payload(contact),
+
+    if batch:
+        batch.set(patient_ref, base_payload, merge=True)
+        batch.set(
+            patient_ref.collection("medical_profile").document("current"),
+            _model_payload(profile.medical_profile),
             merge=True,
         )
+        for contact in profile.emergency_contacts:
+            batch.set(
+                patient_ref.collection("emergency_contacts").document(contact.contact_id),
+                _model_payload(contact),
+                merge=True,
+            )
+    else:
+        patient_ref.set(base_payload, merge=True)
+        patient_ref.collection("medical_profile").document("current").set(
+            _model_payload(profile.medical_profile),
+            merge=True,
+        )
+        for contact in profile.emergency_contacts:
+            patient_ref.collection("emergency_contacts").document(contact.contact_id).set(
+                _model_payload(contact),
+                merge=True,
+            )
     return profile
 
 
@@ -158,28 +178,33 @@ def _load_session_patient_profile(session_uid: str, patient_id: str) -> Frontend
     if session_ref is None:
         return None
 
-    patient_document = session_ref.collection("patients").document(patient_id).get()
+    patient_ref = session_ref.collection("patients").document(patient_id)
+    
+    # Concurrent fetch of patient doc, medical profile and emergency contacts
+    def fetch_patient():
+        return patient_ref.get()
+
+    def fetch_medical():
+        return patient_ref.collection("medical_profile").document("current").get()
+
+    def fetch_contacts():
+        return list(patient_ref.collection("emergency_contacts").stream())
+
+    future_patient = _executor.submit(fetch_patient)
+    future_medical = _executor.submit(fetch_medical)
+    future_contacts = _executor.submit(fetch_contacts)
+
+    patient_document = future_patient.result()
     if not patient_document.exists:
         return None
 
+    medical_doc = future_medical.result()
+    contacts_docs = future_contacts.result()
+
     payload = patient_document.to_dict()
-    medical_document = (
-        session_ref.collection("patients")
-        .document(patient_id)
-        .collection("medical_profile")
-        .document("current")
-        .get()
-    )
-    contacts = [
-        contact.to_dict()
-        for contact in (
-            session_ref.collection("patients")
-            .document(patient_id)
-            .collection("emergency_contacts")
-            .stream()
-        )
-    ]
-    payload["medical_profile"] = medical_document.to_dict() if medical_document.exists else {}
+    contacts = [doc.to_dict() for doc in contacts_docs]
+    
+    payload["medical_profile"] = medical_doc.to_dict() if medical_doc.exists else {}
     payload["emergency_contacts"] = contacts
     return FrontendPatientProfile.model_validate(payload)
 
@@ -288,21 +313,30 @@ def get_or_create_anonymous_session(session_uid: str, patient_id: str | None = N
 
 
 def seed_default_session_patients(session_uid: str) -> list[FrontendPatientProfile]:
+    client = get_firestore_client()
     session = get_or_create_anonymous_session(session_uid=session_uid)
     profiles = _seeded_frontend_profiles(session_uid)
 
-    for profile in profiles:
-        _write_session_patient_profile(profile)
+    if client is not None:
+        batch = client.batch()
+        for profile in profiles:
+            _write_session_patient_profile(profile, batch=batch)
 
-    session.patient_ids = [profile.patient_id for profile in profiles]
-    session.default_patient_seeded = True
-    if not session.active_patient_id and session.patient_ids:
-        session.active_patient_id = session.patient_ids[0]
+        session.patient_ids = [profile.patient_id for profile in profiles]
+        session.default_patient_seeded = True
+        if not session.active_patient_id and session.patient_ids:
+            session.active_patient_id = session.patient_ids[0]
 
-    session_ref = _session_document(session_uid)
-    if session_ref is not None:
         session.last_seen_at = datetime.utcnow()
-        session_ref.set(_model_payload(session), merge=True)
+        session_ref = client.collection("sessions").document(session_uid)
+        batch.set(session_ref, _model_payload(session), merge=True)
+        batch.commit()
+    else:
+        # Fallback for local/unconfigured mode
+        session.patient_ids = [profile.patient_id for profile in profiles]
+        session.default_patient_seeded = True
+        if not session.active_patient_id and session.patient_ids:
+            session.active_patient_id = session.patient_ids[0]
 
     return profiles
 
@@ -311,19 +345,35 @@ def list_session_patient_profiles(session_uid: str) -> list[FrontendPatientProfi
     client = get_firestore_client()
     if client is not None:
         try:
+            t_start = time.time()
             session = get_or_create_anonymous_session(session_uid)
             if not session.default_patient_seeded:
                 return seed_default_session_patients(session_uid)
 
             session_ref = _session_document(session_uid)
-            if session_ref is not None:
-                profiles = []
-                for patient_doc in session_ref.collection("patients").stream():
-                    profile = _load_session_patient_profile(session_uid, patient_doc.id)
-                    if profile is not None:
-                        profiles.append(profile)
-                if profiles:
-                    return profiles
+            if session_ref is None:
+                return _seeded_frontend_profiles(session_uid)
+
+            # Stream patient references
+            patient_refs = list(session_ref.collection("patients").stream())
+            if not patient_refs:
+                return _seeded_frontend_profiles(session_uid)
+
+            # Map patient IDs to parallel load futures
+            futures = [
+                _executor.submit(_load_session_patient_profile, session_uid, doc.id)
+                for doc in patient_refs
+            ]
+            
+            profiles = []
+            for future in futures:
+                res = future.result()
+                if res:
+                    profiles.append(res)
+            
+            if profiles:
+                logger.info(f"Parallel patient load: {len(profiles)} profiles in {time.time() - t_start:.3f}s")
+                return profiles
         except Exception as exc:
             logger.info("Firestore session patient list failed for %s. Error: %s", session_uid, exc)
 

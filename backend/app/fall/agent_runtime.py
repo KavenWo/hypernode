@@ -1,8 +1,4 @@
-"""Agent runtime seam for routing fall-flow responsibilities by backend.
-
-Phase A keeps the current local Python implementations as the default runtime
-while introducing a stable selection point for future Vertex-backed agents.
-"""
+"""Agent runtime seam for routing fall-flow responsibilities by backend."""
 
 from __future__ import annotations
 
@@ -14,6 +10,13 @@ AgentBackend = Literal["local", "vertex", "genkit", "adk"]
 
 DEFAULT_AGENT_BACKEND: AgentBackend = "local"
 SUPPORTED_AGENT_ROLES = {"vision", "vitals", "reasoning", "communication", "execution"}
+ROLE_DEFAULT_BACKENDS: dict[str, AgentBackend] = {
+    "vision": "local",
+    "vitals": "local",
+    "reasoning": "adk",
+    "communication": "adk",
+    "execution": "genkit",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,10 @@ def get_agent_backend(role: str) -> AgentBackend:
         )
 
     role_env_name = f"AGENT_BACKEND_{normalized_role.upper()}"
-    return _normalize_backend(os.getenv(role_env_name) or os.getenv("AGENT_BACKEND"))
+    configured_value = os.getenv(role_env_name) or os.getenv("AGENT_BACKEND")
+    if configured_value:
+        return _normalize_backend(configured_value)
+    return ROLE_DEFAULT_BACKENDS.get(normalized_role, DEFAULT_AGENT_BACKEND)
 
 
 def role_uses_shared_genai_client(role: str) -> bool:
@@ -84,7 +90,6 @@ class FallAgentRuntime(Protocol):
         previous_assessment,
         previous_analysis=None,
         pending_reasoning_context: str = "",
-        execution_plan=None,
         execution_updates=None,
         acknowledged_reasoning_triggers=None,
     ): ...
@@ -151,7 +156,6 @@ class LocalFallAgentRuntime:
         previous_assessment,
         previous_analysis=None,
         pending_reasoning_context: str = "",
-        execution_plan=None,
         execution_updates=None,
         acknowledged_reasoning_triggers=None,
     ):
@@ -169,7 +173,6 @@ class LocalFallAgentRuntime:
             previous_assessment=previous_assessment,
             previous_analysis=previous_analysis,
             pending_reasoning_context=pending_reasoning_context,
-            execution_plan=execution_plan,
             execution_updates=execution_updates,
             acknowledged_reasoning_triggers=acknowledged_reasoning_triggers,
         )
@@ -242,7 +245,6 @@ class VertexFallAgentRuntime:
         previous_assessment,
         previous_analysis=None,
         pending_reasoning_context: str = "",
-        execution_plan=None,
         execution_updates=None,
         acknowledged_reasoning_triggers=None,
     ):
@@ -302,7 +304,6 @@ class GenkitFallAgentRuntime:
         previous_assessment,
         previous_analysis=None,
         pending_reasoning_context: str = "",
-        execution_plan=None,
         execution_updates=None,
         acknowledged_reasoning_triggers=None,
     ):
@@ -327,13 +328,23 @@ class GenkitFallAgentRuntime:
         patient_answers,
     ):
         from app.fall.genkit_execution import run_genkit_execution_plan
+        from app.fall.adk_execution import run_adk_execution_plan
 
-        return await run_genkit_execution_plan(
-            action=action,
-            clinical_assessment=clinical_assessment,
-            patient_profile=patient_profile,
-            patient_answers=patient_answers,
-        )
+        try:
+            return await run_genkit_execution_plan(
+                action=action,
+                clinical_assessment=clinical_assessment,
+                patient_profile=patient_profile,
+                patient_answers=patient_answers,
+            )
+        except RuntimeError:
+            logger.exception("Genkit execution backend unavailable; falling back to ADK execution | action=%s", action)
+            return await run_adk_execution_plan(
+                action=action,
+                clinical_assessment=clinical_assessment,
+                patient_profile=patient_profile,
+                patient_answers=patient_answers,
+            )
 
 
 class AdkFallAgentRuntime:
@@ -385,7 +396,6 @@ class AdkFallAgentRuntime:
         previous_assessment,
         previous_analysis=None,
         pending_reasoning_context: str = "",
-        execution_plan=None,
         execution_updates=None,
         acknowledged_reasoning_triggers=None,
     ):
@@ -400,7 +410,6 @@ class AdkFallAgentRuntime:
             previous_assessment=previous_assessment,
             previous_analysis=previous_analysis,
             pending_reasoning_context=pending_reasoning_context,
-            execution_plan=execution_plan,
             execution_updates=execution_updates,
             acknowledged_reasoning_triggers=acknowledged_reasoning_triggers,
         )
@@ -492,7 +501,6 @@ class RoutedFallAgentRuntime:
         previous_assessment,
         previous_analysis=None,
         pending_reasoning_context: str = "",
-        execution_plan=None,
         execution_updates=None,
         acknowledged_reasoning_triggers=None,
     ):
@@ -506,7 +514,6 @@ class RoutedFallAgentRuntime:
             previous_assessment=previous_assessment,
             previous_analysis=previous_analysis,
             pending_reasoning_context=pending_reasoning_context,
-            execution_plan=execution_plan,
             execution_updates=execution_updates,
             acknowledged_reasoning_triggers=acknowledged_reasoning_triggers,
         )

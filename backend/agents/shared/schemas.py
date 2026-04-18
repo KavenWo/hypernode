@@ -100,11 +100,6 @@ class ExecutionState(BaseModel):
     guidance_step_index: int = Field(default=0, description="Current index into the execution guidance steps.")
 
 
-class TriageQuestion(BaseModel):
-    question_id: str = Field(..., description="Stable identifier for the triage question.")
-    text: str = Field(..., description="Question shown to the patient or bystander.")
-
-
 #
 # Frontend/session input models
 #
@@ -182,14 +177,6 @@ class InteractionSummary(BaseModel):
     testing_assume_bystander: bool = Field(
         default=False,
         description="Whether the current interaction path was forced into bystander testing mode.",
-    )
-
-
-class TriageQuestionSet(BaseModel):
-    questions: list[TriageQuestion] = Field(..., description="Two to three targeted follow-up triage questions.")
-    interaction: InteractionSummary | None = Field(
-        default=None,
-        description="Interaction-layer metadata describing who the questions are aimed at.",
     )
 
 
@@ -309,6 +296,19 @@ class SessionActionResponse(BaseModel):
         default_factory=list,
         description="Latest execution updates after applying the requested action control.",
     )
+    state: SessionState | None = Field(default=None, description="Latest canonical session state after applying the action.")
+    canonical_communication_state: CommunicationState | None = Field(
+        default=None,
+        description="Latest canonical communication state after applying the action.",
+    )
+    reasoning_decision: ReasoningDecision | None = Field(
+        default=None,
+        description="Latest canonical reasoning decision retained for the session.",
+    )
+    execution_state: ExecutionState | None = Field(
+        default=None,
+        description="Latest canonical execution state after applying the action.",
+    )
 
 
 class ExecutionPlan(BaseModel):
@@ -325,6 +325,24 @@ class ExecutionPlan(BaseModel):
     quick_replies: list[str] = Field(default_factory=list, description="Suggested short replies for the responder during execution.")
     protocol_key: str = Field(default="", description="Stable protocol identifier such as cpr or bleeding_control.")
     source: str = Field(default="not_requested", description="Retrieval source used to build the plan.")
+
+
+class ExecutionGuidance(BaseModel):
+    """Canonical execution-guidance payload for the final MVP flow.
+
+    This stays intentionally narrow: it does not re-triage or own control
+    flow. It only returns grounded guidance for the already-decided execution
+    scenario so the deterministic controller can present and track it.
+    """
+
+    scenario: str = Field(default="general_support", description="Stable execution scenario such as dispatch_wait, cpr, monitoring, or family_support.")
+    primary_message: str = Field(default="", description="Short responder-facing message for the current execution phase.")
+    steps: list[str] = Field(default_factory=list, description="Ordered execution guidance steps.")
+    warnings: list[str] = Field(default_factory=list, description="Safety warnings tied to the active execution guidance.")
+    escalation_triggers: list[str] = Field(default_factory=list, description="Specific worsening signals that should trigger escalation or update.")
+    quick_replies: list[str] = Field(default_factory=list, description="Short suggested replies for the responder during execution.")
+    protocol_key: str = Field(default="", description="Stable grounded protocol key such as cpr or recovery_position.")
+    source: str = Field(default="not_requested", description="Grounding source used to build the guidance.")
 
 
 #
@@ -385,19 +403,6 @@ class ClinicalAssessment(BaseModel):
     response_plan: "ResponsePlanSummary" = Field(default_factory=lambda: ResponsePlanSummary(), description="Structured multi-track operational response plan.")
     reasoning_trace: "ReasoningTraceSummary" = Field(default_factory=lambda: ReasoningTraceSummary(), description="Compact Phase 3 reasoning trace for debugging and MVP inspection.")
     ai_server_error: str | None = Field(default=None, description="Specific error string from the AI server if a fallback was triggered.")
-
-
-class FallQuestionsRequest(BaseModel):
-    event: FallEvent
-    vitals: VitalSigns | None = None
-    interaction: InteractionInput | None = None
-
-
-class FallAssessmentRequest(BaseModel):
-    event: FallEvent
-    vitals: VitalSigns | None = None
-    patient_answers: list[PatientAnswer] = Field(default_factory=list)
-    interaction: InteractionInput | None = None
 
 
 #
@@ -652,6 +657,12 @@ class CommunicationTurnRequest(BaseModel):
     )
 
 
+class CommunicationSessionStartRequest(BaseModel):
+    event: FallEvent
+    vitals: VitalSigns | None = None
+    interaction: InteractionInput = Field(default_factory=InteractionInput)
+
+
 #
 # Communication/session models
 #
@@ -698,6 +709,19 @@ class CommunicationAgentAnalysis(BaseModel):
 
 class CommunicationTurnResponse(BaseModel):
     session_id: str = Field(..., description="Server-side session identifier for the communication loop.")
+    state: SessionState | None = Field(default=None, description="Latest canonical session state for the flow.")
+    canonical_communication_state: CommunicationState | None = Field(
+        default=None,
+        description="Latest canonical communication state for the session.",
+    )
+    reasoning_decision: ReasoningDecision | None = Field(
+        default=None,
+        description="Latest canonical reasoning decision if one exists.",
+    )
+    execution_state: ExecutionState | None = Field(
+        default=None,
+        description="Latest canonical execution state for the session.",
+    )
     interaction: InteractionSummary
     communication_analysis: CommunicationAgentAnalysis
     reasoning_invoked: bool = Field(..., description="Whether the reasoning engine was invoked for this turn.")
@@ -746,6 +770,19 @@ class ReasoningRunSummary(BaseModel):
 class CommunicationSessionStateResponse(BaseModel):
     session_id: str = Field(..., description="Server-side session identifier for the communication loop.")
     version: int = Field(default=0, description="Monotonic session-state version for streaming updates.")
+    state: SessionState | None = Field(default=None, description="Latest canonical session state for the flow.")
+    canonical_communication_state: CommunicationState | None = Field(
+        default=None,
+        description="Latest canonical communication state for the session.",
+    )
+    reasoning_decision: ReasoningDecision | None = Field(
+        default=None,
+        description="Latest canonical reasoning decision if one exists.",
+    )
+    execution_state: ExecutionState | None = Field(
+        default=None,
+        description="Latest canonical execution state for the session.",
+    )
     reasoning_status: str = Field(..., description="Current reasoning status such as idle, pending, completed, or failed.")
     reasoning_run_count: int = Field(default=0, description="How many background reasoning runs have completed for this session.")
     reasoning_reason: str = Field(default="", description="Short explanation for the current reasoning state.")
