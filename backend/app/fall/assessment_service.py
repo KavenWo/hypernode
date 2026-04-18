@@ -27,7 +27,7 @@ from agents.communication.interaction_policy import (
 )
 from agents.reasoning.support_grounding import run_reasoning_support_grounding
 from agents.shared.config import get_genai_client
-from app.fall.agent_runtime import get_fall_agent_runtime
+from app.fall.agent_runtime import get_agent_backend, get_fall_agent_runtime
 from app.fall.contracts import (
     ActionSummary,
     AuditSummary,
@@ -53,7 +53,7 @@ from app.fall.contracts import (
 )
 from app.fall.execution_service import SeverityLevel as EmergencySeverityLevel
 from app.fall.execution_service import trigger_emergency
-from db.firebase_client import load_patient_profile
+from db.firebase_client import get_storage_runtime_status, load_patient_profile
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,12 @@ def get_runtime_status() -> dict:
     vertex_project = os.getenv("VERTEX_AI_SEARCH_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
     vertex_engine = os.getenv("VERTEX_AI_SEARCH_ENGINE_ID") or os.getenv("ADK_VERTEX_SEARCH_ENGINE_ID")
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY")
+    storage_status = get_storage_runtime_status()
+    role_backends = {
+        role: get_agent_backend(role)
+        for role in ["vision", "vitals", "reasoning", "communication", "execution"]
+    }
+    adk_enabled_roles = [role for role, backend in role_backends.items() if backend == "adk"]
 
     return {
         "backend_ok": True,
@@ -85,6 +91,10 @@ def get_runtime_status() -> dict:
         "vertex_search_configured": bool(vertex_project and vertex_engine),
         "vertex_project": vertex_project or "",
         "vertex_engine": vertex_engine or "",
+        "storage": storage_status,
+        "agent_backends": role_backends,
+        "adk_enabled": bool(adk_enabled_roles),
+        "adk_enabled_roles": adk_enabled_roles,
     }
 
 

@@ -1,3 +1,10 @@
+"""Shared database models used by the active fall backend.
+
+These models back the current sample-patient and Firestore profile loading used
+by the ADK-enabled fall flow. The standalone emergency prototype keeps its own
+models in ``backend/emergency.py`` and should import from there directly.
+"""
+
 from pydantic import BaseModel, Field
 
 
@@ -23,28 +30,3 @@ class IncidentState(BaseModel):
     bleeding_observed: bool = False
     breathing_status: str = "unknown"
     dispatch_status: str = "pending"
-"""Shared backend data models.
-
-The standalone backend currently keeps the canonical model definitions in
-`emergency.py`. This module restores the conventional `db.models` import path
-and re-exports those models for other backend files.
-"""
-
-from emergency import (  # noqa: F401
-    AIDecisionSummary,
-    EmergencyContact,
-    ExecuteActionRequest,
-    HistoryEntry,
-    Incident,
-    IncidentStatus,
-    IncidentStatusUpdate,
-    Location,
-    PatientProfile,
-    PatientProfileUpdate,
-    SeverityLevel,
-    SmsRequest,
-    SmsResult,
-    StartIncidentRequest,
-    SubmitAnswersRequest,
-    VitalsSnapshot,
-)
