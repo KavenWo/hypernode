@@ -100,13 +100,15 @@ def _build_grounded_execution_context(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
 ) -> _GroundedExecutionContext:
-    from agents.bystander.protocol_grounding import collect_required_protocol_intents
+    from agents.bystander.protocol_grounding import (
+        build_protocol_guidance_summary,
+        collect_required_protocol_intents,
+    )
     from app.fall.assessment_service import (
         _requires_mandatory_protocol_grounding,
         _run_grounded_guidance_stage,
         _should_trigger_grounded_guidance,
         build_interaction_summary,
-        build_protocol_guidance_summary,
     )
 
     interaction_summary = build_interaction_summary(
@@ -253,6 +255,22 @@ def _get_genkit_execution_flow():
                 grounded_context.retrieval_source
                 if grounded_context.should_ground_guidance or grounded_context.requires_protocol
                 else "non_grounded"
+            )
+        if grounded_context.protocol_key and grounded_context.protocol_steps:
+            output.protocol_key = grounded_context.protocol_key
+            output.scenario = grounded_context.protocol_key or output.scenario
+            output.primary_message = grounded_context.protocol_steps[0]
+            output.steps = list(grounded_context.protocol_steps)
+            if grounded_context.warnings:
+                output.warnings = list(grounded_context.warnings)
+            if grounded_context.escalation_triggers:
+                output.escalation_triggers = list(grounded_context.escalation_triggers)
+            output.source = grounded_context.retrieval_source or output.source or "grounded"
+            logger.info(
+                "[GenkitExecution] Deterministic protocol override applied | protocol=%s steps=%d source=%s",
+                grounded_context.protocol_key,
+                len(grounded_context.protocol_steps),
+                output.source,
             )
         return output
 

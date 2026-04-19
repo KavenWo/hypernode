@@ -9,6 +9,7 @@ import asyncio
 import json
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
 
 from app.fall.assessment_service import get_runtime_status
@@ -24,9 +25,13 @@ from app.fall.contracts import (
     CommunicationSessionStartRequest,
     CommunicationTurnRequest,
     CommunicationTurnResponse,
+    DemoVideoAnalysisRequest,
+    DemoVideoAnalysisResponse,
     SessionActionRequest,
     SessionActionResponse,
 )
+from app.fall.demo_video_registry import get_demo_video_path, list_demo_videos
+from app.fall.video_analysis_service import analyze_demo_video
 from db.firebase_client import list_sample_patient_profiles
 
 router = APIRouter(prefix="/api/v1/events/fall", tags=["Fall Flow"])
@@ -59,6 +64,32 @@ async def get_sample_patients() -> dict:
             for profile in profiles
         ]
     }
+
+
+@router.get("/demo-videos")
+async def get_demo_videos() -> dict:
+    """Return the preset demo videos available for the controlled dashboard flow."""
+
+    return {"videos": list_demo_videos()}
+
+
+@router.post("/demo-videos/analyze", response_model=DemoVideoAnalysisResponse)
+async def analyze_selected_demo_video(
+    request: DemoVideoAnalysisRequest,
+) -> DemoVideoAnalysisResponse:
+    """Run Gemini vision analysis on a selected preset dashboard clip."""
+
+    return await analyze_demo_video(request.video_id)
+
+
+@router.get("/demo-videos/{video_id}/file")
+async def get_demo_video_file(video_id: str) -> FileResponse:
+    """Serve a local preset demo video asset for dashboard preview."""
+
+    video_path = get_demo_video_path(video_id)
+    if video_path is None:
+        raise HTTPException(status_code=404, detail="Demo video not found")
+    return FileResponse(video_path, media_type="video/mp4", filename=video_path.name)
 
 
 @router.post("/session-start", response_model=CommunicationTurnResponse)
@@ -98,6 +129,14 @@ async def reset_session_state(session_id: str) -> dict:
     if not reset_result["reset"]:
         raise HTTPException(status_code=404, detail="Session not found")
     return reset_result
+
+
+@router.post("/session-stop/{session_id}")
+async def stop_session_log(session_id: str) -> dict:
+    """Log when a user explicitly stops a session from the frontend dashboard."""
+    from app.fall.conversation_service import logger
+    logger.info(f"[Session {session_id}] WORKFLOW_STOPPED | User explicitly halted the session from the dashboard.")
+    return {"status": "ok", "session_id": session_id}
 
 
 @router.post("/session-action/{session_id}", response_model=SessionActionResponse)

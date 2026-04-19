@@ -66,6 +66,27 @@ async def test_local_runtime_matches_local_signal_agents(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_local_runtime_supports_demo_video_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_BACKEND", "local")
+    runtime = get_fall_agent_runtime()
+    event = FallEvent(
+        user_id="user_001",
+        timestamp="2024-04-10T12:00:00Z",
+        motion_state="rapid_descent",
+        confidence_score=0.98,
+        video_id="falling_down",
+        video_source="local_demo_video",
+        video_summary="Person fell and is motionless",
+    )
+
+    runtime_vision = await runtime.inspect_fall_event(event)
+
+    assert runtime_vision.fall_detected is True
+    assert runtime_vision.severity_hint == "critical"
+    assert runtime_vision.reasoning == "Person fell and is motionless"
+
+
+@pytest.mark.asyncio
 async def test_local_runtime_matches_local_communication_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_BACKEND", "local")
     runtime = get_fall_agent_runtime()

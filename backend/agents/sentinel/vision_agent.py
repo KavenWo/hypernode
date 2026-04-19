@@ -21,7 +21,7 @@ async def inspect_fall_event(event: FallEvent) -> VisionAssessment:
     else:
         severity_hint = "low"
 
-    reasoning = (
+    reasoning = event.video_summary or (
         f"Motion state '{event.motion_state}' with confidence {event.confidence_score:.2f} "
         f"suggests an initial {severity_hint} risk profile."
     )

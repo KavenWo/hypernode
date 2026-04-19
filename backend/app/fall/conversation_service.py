@@ -12,6 +12,8 @@ from fastapi import BackgroundTasks
 from agents.shared.config import get_genai_client
 from app.fall.action_runtime_service import (
     apply_session_action_decision,
+    request_contact_family_action,
+    request_emergency_dispatch_confirmation,
     reset_action_runtime_session,
     sync_action_state_with_assessment,
     sync_dispatch_confirmation_task,
@@ -37,32 +39,23 @@ from app.fall.contracts import (
     ReasoningRefreshSummary,
     SessionState,
 )
-from app.fall.session_store import fall_session_store
+from app.fall.session_store import FallSessionRecord, fall_session_store
+from app.services.patient_incident_service import get_incident_by_realtime_session_id
 
 logger = logging.getLogger(__name__)
 _reasoning_tasks: dict[str, asyncio.Task[None]] = {}
 
-STEP_ACKNOWLEDGEMENTS = {
-    "done",
-    "done.",
-    "ok",
-    "okay",
-    "okay.",
-    "next",
-    "next step",
-    "need next step",
-    "got it",
-    "understood",
+EXECUTION_PROGRESS_SIGNALS = {
+    "advance_step",
+    "repeat_current_step",
+    "repair_current_step",
+    "request_cpr_guidance",
 }
-
-STEP_REPAIR_SIGNALS = {
-    "wrong",
-    "did it wrong",
-    "i did it wrong",
-    "not sure",
-    "confused",
-    "messed up",
+CPR_JOIN_SIGNALS = {
+    "advance_step",
+    "request_cpr_guidance",
 }
+CPR_GUIDANCE_JOIN_TIMEOUT_SECONDS = 2.5
 
 
 def _short_session_id(session_id: str | None) -> str:
@@ -89,6 +82,11 @@ def _latest_human_message_key(conversation_history: list[ConversationMessage]) -
         if message.role not in {"assistant", "system"}:
             return _normalized_message_key(message.text)
     return ""
+
+
+def _is_no_response_message(text: str | None) -> bool:
+    normalized = _normalized_message_key(text)
+    return normalized == "no_response_"
 
 
 def _answers_from_turn_message(message_text: str, target: str) -> list[PatientAnswer]:
@@ -319,15 +317,37 @@ def _apply_execution_status_override(
     as dispatch/family updates.
     """
 
+    protocol_ready = bool(
+        assessment is not None
+        and assessment.protocol_guidance is not None
+        and assessment.protocol_guidance.ready_for_communication
+        and assessment.protocol_guidance.steps
+    )
+
     execution_directive = _execution_override_payload(
         execution_updates=execution_updates,
         communication_target=analysis.communication_target,
         announced_execution_types=announced_execution_types,
     )
+    if execution_directive is not None and protocol_ready and execution_directive.get("message") in {
+        "I have informed the family.",
+        "I have informed your family.",
+        "I have informed the family for support.",
+    }:
+        logger.info(
+            "[Session %s] Skipping execution announcement override | reason=protocol_ready protocol=%s",
+            _short_session_id(getattr(getattr(assessment, "interaction", None), "session_id", None)),
+            assessment.protocol_guidance.protocol_key if assessment and assessment.protocol_guidance else "none",
+        )
+        execution_directive = None
+
     if execution_directive is None:
         immediate_step = analysis.immediate_step
-        if immediate_step is None and assessment is not None and assessment.guidance.steps:
-            immediate_step = assessment.guidance.steps[0]
+        if immediate_step is None and assessment is not None:
+            if assessment.protocol_guidance.steps:
+                immediate_step = assessment.protocol_guidance.steps[0]
+            elif assessment.guidance.steps:
+                immediate_step = assessment.guidance.steps[0]
         return analysis.model_copy(update={"immediate_step": immediate_step}), []
 
     primary_message = str(execution_directive["message"])
@@ -373,6 +393,14 @@ def _build_critical_status_message(
     critical_updates = [u for u in execution_updates if u.type in CRITICAL_TYPES]
 
     if not critical_updates:
+        return None, []
+
+    if assessment.protocol_guidance.ready_for_communication and assessment.protocol_guidance.steps:
+        logger.info(
+            "[Session %s] Suppressing critical status auto-message | reason=protocol_ready protocol=%s",
+            _short_session_id(getattr(getattr(assessment, "interaction", None), "session_id", None)),
+            assessment.protocol_guidance.protocol_key or "none",
+        )
         return None, []
 
     target = "patient"
@@ -473,6 +501,103 @@ def _store_execution_guidance_state(*, session_id: str, session, guidance: Execu
             guidance_step_index=0,
         ),
     )
+    logger.info(
+        "[Session %s] Stored execution state | scenario=%s protocol=%s phase=%s steps=%d primary=%s",
+        _short_session_id(session_id),
+        guidance.scenario or "none",
+        guidance.protocol_key or "none",
+        (previous_execution.phase if previous_execution.phase not in {"idle", ""} else "guidance"),
+        len(guidance.steps or []),
+        _clip_message(guidance.primary_message, 120),
+    )
+
+
+def _store_execution_guidance_assessment(*, session_id: str, session, guidance: ExecutionGuidance):
+    """Persist execution guidance into the active assessment used by step progression.
+
+    The communication execution loop advances steps from the session assessment.
+    When Phase 2 execution returns grounded CPR or other protocol steps, they
+    must be written back into the assessment so later "next step" turns do not
+    fall back to generic reasoning-stage guidance.
+    """
+
+    assessment = getattr(session, "latest_assessment", None)
+    if assessment is None:
+        logger.warning(
+            "[Session %s] Execution guidance could not be persisted into assessment | reason=no_assessment protocol=%s",
+            _short_session_id(session_id),
+            guidance.protocol_key or "none",
+        )
+        return None
+
+    next_protocol_key = guidance.protocol_key or (
+        assessment.protocol_guidance.protocol_key if assessment.protocol_guidance else ""
+    )
+    next_protocol_title = (
+        next_protocol_key.replace("_", " ").title()
+        if next_protocol_key
+        else (assessment.protocol_guidance.title if assessment.protocol_guidance else "")
+    )
+    next_primary_message = guidance.primary_message or (
+        guidance.steps[0]
+        if guidance.steps
+        else assessment.guidance.primary_message
+    )
+    next_steps = list(guidance.steps or [])
+    next_warnings = list(guidance.warnings or [])
+    next_escalation_triggers = list(guidance.escalation_triggers or [])
+
+    updated_assessment = assessment.model_copy(
+        update={
+            "guidance": assessment.guidance.model_copy(
+                update={
+                    "primary_message": next_primary_message,
+                    "steps": next_steps or list(assessment.guidance.steps),
+                    "warnings": next_warnings or list(assessment.guidance.warnings),
+                    "escalation_triggers": next_escalation_triggers or list(assessment.guidance.escalation_triggers),
+                }
+            ),
+            "protocol_guidance": assessment.protocol_guidance.model_copy(
+                update={
+                    "protocol_key": next_protocol_key,
+                    "title": next_protocol_title,
+                    "grounding_required": bool(next_protocol_key),
+                    "grounding_status": "ready" if next_steps else assessment.protocol_guidance.grounding_status,
+                    "primary_message": next_primary_message,
+                    "steps": next_steps,
+                    "warnings": next_warnings,
+                    "communication_message": next_primary_message,
+                    "ready_for_communication": bool(next_steps),
+                    "rationale": (
+                        f"Execution guidance stored from {guidance.source or 'execution'} for active protocol progression."
+                        if next_steps
+                        else assessment.protocol_guidance.rationale
+                    ),
+                }
+            ),
+        }
+    )
+    stored = fall_session_store.set_latest_assessment(
+        session_id=session_id,
+        assessment=updated_assessment,
+    )
+    logger.info(
+        "[Session %s] Stored execution assessment guidance | protocol=%s steps=%d warnings=%d source=%s",
+        _short_session_id(session_id),
+        next_protocol_key or "none",
+        len(next_steps),
+        len(next_warnings),
+        guidance.source or "unknown",
+    )
+    if next_steps:
+        logger.info(
+            "[Session %s] Stored protocol step preview | protocol=%s steps=%s warnings=%s",
+            _short_session_id(session_id),
+            next_protocol_key or "none",
+            next_steps[:5],
+            next_warnings[:3],
+        )
+    return stored
 
 
 def _execution_guidance_steps(session) -> list[str]:
@@ -484,16 +609,100 @@ def _execution_guidance_steps(session) -> list[str]:
 
     protocol_steps = list(assessment.protocol_guidance.steps) if assessment.protocol_guidance else []
     if protocol_steps:
+        logger.info(
+            "[Session %s] Execution step source selected | source=protocol protocol=%s steps=%d preview=%s",
+            _short_session_id(getattr(session, "session_id", None)),
+            assessment.protocol_guidance.protocol_key if assessment.protocol_guidance else "none",
+            len(protocol_steps),
+            protocol_steps[:4],
+        )
         return protocol_steps
 
     guidance_steps = list(assessment.guidance.steps) if assessment.guidance else []
+    if guidance_steps:
+        logger.info(
+            "[Session %s] Execution step source selected | source=generic_guidance steps=%d",
+            _short_session_id(getattr(session, "session_id", None)),
+            len(guidance_steps),
+    )
     return guidance_steps
+
+
+def _has_active_execution_guidance(session) -> bool:
+    """Return whether the canonical session currently has execution guidance to surface."""
+
+    execution_state = getattr(session, "execution_state", None)
+    if execution_state is None:
+        return False
+
+    if _execution_guidance_steps(session):
+        return execution_state.phase in {"guidance", "dispatch_countdown", "dispatch_triggered"}
+
+    return False
+
+
+def _has_ready_cpr_guidance(session) -> bool:
+    """Return whether grounded CPR guidance is already available for communication."""
+
+    assessment = getattr(session, "latest_assessment", None)
+    protocol_guidance = assessment.protocol_guidance if assessment is not None else None
+    if protocol_guidance is None:
+        return False
+    return (
+        protocol_guidance.protocol_key == "cpr"
+        and protocol_guidance.ready_for_communication
+        and bool(protocol_guidance.steps)
+    )
+
+
+async def _wait_for_cpr_guidance_ready(session_id: str, *, timeout_seconds: float) -> None:
+    """Briefly wait for the in-flight background reasoning/execution task to publish CPR guidance."""
+
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        session = fall_session_store.get_session(session_id)
+        if session is None:
+            return
+        if _has_ready_cpr_guidance(session):
+            logger.info(
+                "[Session %s] CPR guidance became ready during join wait",
+                _short_session_id(session_id),
+            )
+            return
+
+        task = _reasoning_tasks.get(session_id)
+        if task is None or task.done():
+            return
+
+        await asyncio.sleep(0.1)
+
+
+def _apply_cpr_guidance_hold_if_needed(*, session, analysis: CommunicationAgentAnalysis) -> CommunicationAgentAnalysis:
+    """Return a controlled holding response if CPR guidance is still not ready."""
+
+    signal = (analysis.execution_signal or "none").strip().lower()
+    if signal not in CPR_JOIN_SIGNALS:
+        return analysis
+    if session.reasoning_status != "pending":
+        return analysis
+    if _has_ready_cpr_guidance(session):
+        return analysis
+
+    return analysis.model_copy(
+        update={
+            "followup_text": "Preparing CPR steps now. Start chest compressions if the patient is not breathing normally.",
+            "guidance_intent": "instruction",
+            "next_focus": "guided_action",
+            "immediate_step": "Preparing CPR steps now. Start chest compressions if the patient is not breathing normally.",
+            "quick_replies": [],
+        }
+    )
 
 
 def _current_guidance_steps_for_response(session, analysis: CommunicationAgentAnalysis) -> list[str]:
     """Return the current visible guidance steps for the response payload."""
 
-    if session.state == SessionState.EXECUTION_IN_PROGRESS:
+    if _has_active_execution_guidance(session):
         steps = _execution_guidance_steps(session)
         if steps and session.execution_state is not None:
             step_index = min(session.execution_state.guidance_step_index, max(len(steps) - 1, 0))
@@ -503,14 +712,10 @@ def _current_guidance_steps_for_response(session, analysis: CommunicationAgentAn
     return []
 
 
-def _advance_execution_guidance_if_needed(*, session_id: str, session, latest_message: str) -> None:
-    """Advance the execution step pointer when the responder confirms progress."""
+def _advance_execution_guidance_if_needed(*, session_id: str, session, analysis: CommunicationAgentAnalysis, latest_message: str) -> None:
+    """Advance or repair the execution step pointer based on the AI's controlled signal."""
 
-    if session.state != SessionState.EXECUTION_IN_PROGRESS:
-        return
-
-    normalized_message = _normalized_message_key(latest_message)
-    if normalized_message not in STEP_ACKNOWLEDGEMENTS:
+    if not _has_active_execution_guidance(session):
         return
 
     steps = _execution_guidance_steps(session)
@@ -522,10 +727,85 @@ def _advance_execution_guidance_if_needed(*, session_id: str, session, latest_me
         if session.execution_state is not None
         else session.active_protocol_step_index
     )
+    current_step = steps[min(current_index, max(len(steps) - 1, 0))]
+    current_step_lower = current_step.lower()
+    protocol_key = (
+        session.execution_state.guidance_protocol
+        if session.execution_state is not None
+        else session.active_protocol_key
+    )
+    signal = (analysis.execution_signal or "none").strip().lower()
+    if signal not in EXECUTION_PROGRESS_SIGNALS:
+        return
+
+    if signal == "repeat_current_step":
+        logger.info(
+            "[Session %s] Repeating execution step | protocol=%s index=%d total=%d signal=%s message=%s",
+            _short_session_id(session_id),
+            protocol_key or "none",
+            current_index,
+            len(steps),
+            signal,
+            _clip_message(latest_message, 80),
+        )
+        return
+
+    if signal == "repair_current_step":
+        logger.info(
+            "[Session %s] Repair requested for execution step | protocol=%s index=%d total=%d signal=%s message=%s",
+            _short_session_id(session_id),
+            protocol_key or "none",
+            current_index,
+            len(steps),
+            signal,
+            _clip_message(latest_message, 80),
+        )
+        return
+
+    if signal == "request_cpr_guidance" and protocol_key == "cpr":
+        if current_index != 0:
+            logger.info(
+                "[Session %s] Re-anchoring CPR guidance to first step | from=%d total=%d message=%s",
+                _short_session_id(session_id),
+                current_index,
+                len(steps),
+                _clip_message(latest_message, 80),
+            )
+            updated_session = fall_session_store.set_protocol_step_index(
+                session_id=session_id,
+                step_index=0,
+            )
+            if updated_session is not None and updated_session.canonical_communication_state is not None:
+                fall_session_store.store_canonical_flow_state(
+                    session_id=session_id,
+                    communication_state=updated_session.canonical_communication_state.model_copy(
+                        update={"latest_prompt": steps[0]}
+                    ),
+                )
+        return
+
+    should_advance = signal == "advance_step" or (
+        signal == "request_cpr_guidance"
+        and protocol_key == "cpr"
+        and ("start cpr" in current_step_lower or "not breathing normally" in current_step_lower)
+    )
+    if not should_advance:
+        return
+
     if current_index >= len(steps) - 1:
         return
 
     next_index = current_index + 1
+    logger.info(
+        "[Session %s] Advancing execution step | protocol=%s from=%d to=%d total=%d signal=%s message=%s",
+        _short_session_id(session_id),
+        protocol_key or "none",
+        current_index,
+        next_index,
+        len(steps),
+        signal,
+        _clip_message(latest_message, 80),
+    )
     updated_session = fall_session_store.set_protocol_step_index(
         session_id=session_id,
         step_index=next_index,
@@ -545,12 +825,12 @@ def _advance_execution_guidance_if_needed(*, session_id: str, session, latest_me
 
 
 def _apply_execution_guidance_prompt(*, session, analysis: CommunicationAgentAnalysis) -> CommunicationAgentAnalysis:
-    """Override responder messaging with the active execution step when appropriate."""
+    """Attach execution-step guardrails while letting the AI render the wording."""
 
-    if session.state != SessionState.EXECUTION_IN_PROGRESS:
+    if not _has_active_execution_guidance(session):
         return analysis
 
-    if session.execution_state is None or session.execution_state.phase not in {"guidance", "dispatch_triggered"}:
+    if session.execution_state is None or session.execution_state.phase not in {"guidance", "dispatch_countdown", "dispatch_triggered"}:
         return analysis
 
     steps = _execution_guidance_steps(session)
@@ -566,11 +846,10 @@ def _apply_execution_guidance_prompt(*, session, analysis: CommunicationAgentAna
 
     return analysis.model_copy(
         update={
-            "followup_text": current_step,
             "guidance_intent": "instruction",
             "next_focus": "guided_action",
             "immediate_step": current_step,
-            "quick_replies": (["Okay", "Condition worse"] if is_last_step else ["Done", "Need next step", "Condition worse"]),
+            "quick_replies": (["Okay"] if is_last_step else ["Done", "Need next step"]),
         }
     )
 
@@ -598,10 +877,10 @@ def _bootstrap_canonical_opening_state(*, session_id: str) -> None:
 
     This is intentionally deterministic. A new session always starts with the
     family alert / monitoring stage already underway and the first responder-
-    facing communication prompt fixed to "Are you okay?".
+    facing communication prompt fixed to "A fall is detected, are you okay?".
     """
 
-    opening_prompt = "Are you okay?"
+    opening_prompt = "A fall is detected, are you okay?"
     fall_session_store.store_canonical_flow_state(
         session_id=session_id,
         state=SessionState.INITIAL_ACTIONS_STARTED,
@@ -633,6 +912,18 @@ def _bootstrap_canonical_opening_state(*, session_id: str) -> None:
             latest_prompt=opening_prompt,
         ),
     )
+    session = fall_session_store.get_session(session_id)
+    opening_already_present = bool(
+        session is not None
+        and session.conversation_history
+        and session.conversation_history[0].role == "assistant"
+        and session.conversation_history[0].text.strip() == opening_prompt
+    )
+    if not opening_already_present:
+        fall_session_store.append_messages(
+            session_id,
+            [ConversationMessage(role="assistant", text=opening_prompt)],
+        )
 
 
 def _build_opening_turn_response(*, session) -> CommunicationTurnResponse:
@@ -641,7 +932,7 @@ def _build_opening_turn_response(*, session) -> CommunicationTurnResponse:
     latest_prompt = (
         session.canonical_communication_state.latest_prompt
         if session.canonical_communication_state is not None
-        else "Are you okay?"
+        else "A fall is detected, are you okay?"
     )
     opening_interaction = session.interaction_summary or _build_default_opening_interaction()
     opening_analysis = CommunicationAgentAnalysis(
@@ -680,7 +971,7 @@ def _build_opening_turn_response(*, session) -> CommunicationTurnResponse:
         reasoning_error=session.reasoning_error,
         assistant_message=latest_prompt,
         assistant_question=latest_prompt,
-        guidance_steps=_current_guidance_steps_for_response(session, latest_analysis),
+        guidance_steps=_current_guidance_steps_for_response(session, opening_analysis),
         quick_replies=opening_analysis.quick_replies,
         assessment=session.latest_assessment,
         execution_updates=session.execution_updates,
@@ -916,7 +1207,7 @@ def _apply_canonical_prompt_override(
     is_bystander = (communication_state.mode == "bystander")
     
     prompt_by_state = {
-        SessionState.AWAITING_OPENING_RESPONSE: "Are you okay?",
+        SessionState.AWAITING_OPENING_RESPONSE: "A fall is detected, are you okay?",
         SessionState.BYSTANDER_CHECK: "Is anyone nearby who can assist?",
         SessionState.CONSCIOUSNESS_CHECK: "Is the patient conscious?",
         SessionState.BREATHING_CHECK: "Is the patient breathing normally?" if is_bystander else "Are you breathing normally?",
@@ -1237,7 +1528,70 @@ def reset_fall_conversation_session(session_id: str) -> dict[str, bool | str]:
     }
 
 
+def _rehydrate_session_from_incident(incident, session_id: str) -> FallSessionRecord:
+    """Map a persistent Incident record back into the in-memory FallSessionRecord.
+
+    This allows the backend to recover session state across multiple workers or
+    after a process restart, provided the incident record was already created.
+    """
+    trigger = incident.simulation_trigger or {}
+    event = FallEvent(
+        user_id=incident.patient_id,
+        motion_state=trigger.get("motion_state", "stable"),
+        confidence=trigger.get("confidence", 0.0),
+        vitals_snapshot=trigger.get("vitals_snapshot"),
+        detection_summary=trigger.get("detection_summary"),
+        video_metadata=incident.video_metadata,
+    )
+
+    interaction = InteractionInput(
+        patient_id=incident.patient_id,
+        bystander_present=trigger.get("interaction", {}).get("bystander_present", False),
+    )
+
+    # Map status to session state (they share similar values but are different enums)
+    try:
+        session_state = SessionState(incident.status.value)
+    except (ValueError, AttributeError):
+        session_state = SessionState.IDLE
+
+    return FallSessionRecord(
+        session_id=session_id,
+        event=event,
+        state=session_state,
+        canonical_communication_state=(
+            CommunicationState.model_validate(incident.canonical_communication_state)
+            if incident.canonical_communication_state
+            else None
+        ),
+        reasoning_decision=(
+            ReasoningDecision.model_validate(incident.reasoning_decision)
+            if incident.reasoning_decision
+            else None
+        ),
+        execution_state=(
+            ExecutionState.model_validate(incident.execution_state)
+            if incident.execution_state
+            else None
+        ),
+        interaction_input=interaction,
+        conversation_history=[
+            ConversationMessage.model_validate(m) for m in incident.conversation_history
+        ],
+        execution_updates=[
+            ExecutionUpdate.model_validate(u) for u in incident.execution_updates
+        ],
+        action_states=[
+            ActionStateSummary.model_validate(s) for s in incident.action_states
+        ],
+        reasoning_runs=[
+            ReasoningRunSummary.model_validate(r) for r in incident.reasoning_runs
+        ],
+        version=1,
+    )
+
 async def run_fall_conversation_turn(
+
     request: CommunicationTurnRequest,
     *,
     background_tasks: Optional[BackgroundTasks] = None,
@@ -1251,6 +1605,17 @@ async def run_fall_conversation_turn(
     4. queue a background reasoning refresh only when the state changed enough
     """
     session = fall_session_store.get_session(request.session_id) if request.session_id else None
+    if session is None and request.session_id:
+        incident = get_incident_by_realtime_session_id(request.session_id)
+        if incident:
+            logger.info(
+                "[Session %s] Not in memory but found incident %s | Rehydrating",
+                _short_session_id(request.session_id),
+                incident.incident_id,
+            )
+            hydrated_record = _rehydrate_session_from_incident(incident, request.session_id)
+            session = fall_session_store.upsert_session_record(hydrated_record)
+
     if session is None:
         session = fall_session_store.create_session(
             event=request.event,
@@ -1295,6 +1660,125 @@ async def run_fall_conversation_turn(
     existing_assessment = session.latest_assessment or request.previous_assessment
     conversation_history = session.conversation_history or request.conversation_history
 
+    if _is_no_response_message(request.latest_responder_message):
+        logger.info(
+            "[Session %s] No-response timeout detected | triggering hardcoded dispatch flow",
+            _short_session_id(session.session_id),
+        )
+        fallback_analysis = session.latest_analysis or CommunicationAgentAnalysis(
+            followup_text=(
+                "Patient appears to be unconscious. "
+                "I am skipping further communication checks, dispatching emergency support, "
+                "and notifying the family now."
+            ),
+            responder_role="no_response",
+            communication_target="bystander",
+            patient_responded=False,
+            bystander_present=False,
+            bystander_can_help=False,
+            extracted_facts=["no_response", "possible_unconsciousness"],
+            guidance_intent="instruction",
+            next_focus="emergency_dispatch",
+            reasoning_needed=False,
+            reasoning_reason="No response timeout triggered the unconsciousness safety path.",
+            quick_replies=[],
+        )
+        responder_reasoning_version = session.reasoning_input_version
+        user_message = ConversationMessage(
+            role="no_response",
+            text=request.latest_responder_message.strip(),
+            reasoning_input_version=responder_reasoning_version,
+            comm_reasoning_required=False,
+            comm_reasoning_reason="No response timeout triggered the unconsciousness safety path.",
+        )
+        fall_session_store.append_messages(session.session_id, [user_message])
+
+        final_analysis = fallback_analysis.model_copy(
+            update={
+                "followup_text": (
+                    "Patient appears to be unconscious. "
+                    "I am skipping further communication checks, dispatching emergency support, "
+                    "and notifying the family now."
+                ),
+                "responder_role": "no_response",
+                "communication_target": "bystander",
+                "patient_responded": False,
+                "guidance_intent": "instruction",
+                "next_focus": "emergency_dispatch",
+                "reasoning_needed": False,
+                "reasoning_reason": "No response timeout triggered the unconsciousness safety path.",
+                "quick_replies": [],
+            }
+        )
+        enriched_interaction = request.interaction.model_copy(
+            update={
+                "patient_response_status": "no_response",
+                "bystander_available": True,
+                "message_text": request.latest_responder_message,
+                "new_fact_keys": ["no_response", "possible_unconsciousness"],
+                "responder_mode_hint": "no_response",
+                "no_response_timeout": True,
+            }
+        )
+        fall_session_store.update_context(
+            session_id=session.session_id,
+            event=request.event,
+            vitals=request.vitals,
+            interaction_input=enriched_interaction,
+            bump_reasoning_version=False,
+        )
+        interaction = build_interaction_summary(
+            interaction=enriched_interaction,
+            patient_answers=_answers_from_turn_message(request.latest_responder_message, "patient"),
+            recommended_action=existing_assessment.action.recommended if existing_assessment else None,
+        )
+        assistant_message = ConversationMessage(
+            role="assistant",
+            text=final_analysis.followup_text,
+            reasoning_input_version=responder_reasoning_version,
+        )
+        fall_session_store.append_messages(session.session_id, [assistant_message])
+        fall_session_store.store_turn_state(
+            session_id=session.session_id,
+            interaction_summary=interaction,
+            latest_analysis=final_analysis,
+        )
+        request_emergency_dispatch_confirmation(
+            session.session_id,
+            reason="No response was detected after the communication agent waited for a reply.",
+            detail="Emergency dispatch is pending confirmation because the patient appears unconscious.",
+        )
+        request_contact_family_action(
+            session.session_id,
+            reason="The patient appears unconscious and emergency support is being escalated.",
+            detail="Family contact was triggered because the patient appears unconscious.",
+            message_text="Emergency escalation update: the patient appears unconscious and emergency help is being dispatched.",
+        )
+        latest_session = fall_session_store.get_session(session.session_id) or session
+        return CommunicationTurnResponse(
+            session_id=session.session_id,
+            state=latest_session.state,
+            canonical_communication_state=latest_session.canonical_communication_state,
+            reasoning_decision=latest_session.reasoning_decision,
+            execution_state=latest_session.execution_state,
+            interaction=interaction,
+            communication_analysis=final_analysis,
+            reasoning_invoked=False,
+            reasoning_status=latest_session.reasoning_status,
+            reasoning_run_count=latest_session.reasoning_run_count,
+            reasoning_reason=latest_session.reasoning_reason,
+            reasoning_error=latest_session.reasoning_error,
+            assistant_message=final_analysis.followup_text,
+            assistant_question=None,
+            guidance_steps=[],
+            quick_replies=[],
+            assessment=latest_session.latest_assessment or existing_assessment,
+            execution_updates=latest_session.execution_updates,
+            action_states=latest_session.action_states,
+            transcript_append=[assistant_message],
+            reasoning_runs=latest_session.reasoning_runs,
+        )
+
     # Consume pending context from background reasoning (cleared after read)
     pending_reasoning_context = fall_session_store.consume_pending_context(
         session.session_id
@@ -1323,16 +1807,32 @@ async def run_fall_conversation_turn(
         acknowledged_reasoning_triggers=session.reasoning_triggered_fact_keys,
     )
     logger.info(
-        "[Session %s] Communication analyzed | role=%s target=%s reasoning_needed=%s message=\"%s\"",
+        "[Session %s] Communication analyzed | role=%s target=%s reasoning_needed=%s execution_signal=%s message=\"%s\"",
         _short_session_id(session.session_id),
         analysis.responder_role,
         analysis.communication_target,
         analysis.reasoning_needed,
+        analysis.execution_signal or "none",
         _clip_message(request.latest_responder_message or "<session start>"),
     )
+    signal = (analysis.execution_signal or "none").strip().lower()
+    if signal in CPR_JOIN_SIGNALS and session.reasoning_status == "pending" and not _has_ready_cpr_guidance(session):
+        logger.info(
+            "[Session %s] Waiting briefly for CPR guidance | signal=%s timeout=%.1fs",
+            _short_session_id(session.session_id),
+            signal,
+            CPR_GUIDANCE_JOIN_TIMEOUT_SECONDS,
+        )
+        await _wait_for_cpr_guidance_ready(
+            session.session_id,
+            timeout_seconds=CPR_GUIDANCE_JOIN_TIMEOUT_SECONDS,
+        )
+        session = fall_session_store.get_session(session.session_id) or session
+
     _advance_execution_guidance_if_needed(
         session_id=session.session_id,
         session=session,
+        analysis=analysis,
         latest_message=request.latest_responder_message,
     )
     session = fall_session_store.get_session(session.session_id) or session
@@ -1390,6 +1890,10 @@ async def run_fall_conversation_turn(
         analysis=final_analysis,
     )
     final_analysis = _apply_execution_guidance_prompt(
+        session=current_session,
+        analysis=final_analysis,
+    )
+    final_analysis = _apply_cpr_guidance_hold_if_needed(
         session=current_session,
         analysis=final_analysis,
     )
@@ -1488,6 +1992,26 @@ async def run_fall_conversation_turn(
         )
 
     latest_session = fall_session_store.get_session(session.session_id) or session
+    latest_assessment = latest_session.latest_assessment or existing_assessment
+    latest_interaction = latest_session.interaction_summary or interaction
+    logger.info(
+        "[Session %s] Response snapshot | state=%s protocol=%s phase=%s step_index=%s guidance_steps=%d current_guidance=%s",
+        _short_session_id(session.session_id),
+        latest_session.state.value if hasattr(latest_session.state, "value") else latest_session.state,
+        (
+            latest_assessment.protocol_guidance.protocol_key
+            if latest_assessment is not None and latest_assessment.protocol_guidance is not None
+            else "none"
+        ),
+        latest_session.execution_state.phase if latest_session.execution_state is not None else "none",
+        (
+            latest_session.execution_state.guidance_step_index
+            if latest_session.execution_state is not None
+            else "none"
+        ),
+        len(_execution_guidance_steps(latest_session)),
+        _current_guidance_steps_for_response(latest_session, final_analysis),
+    )
 
     return CommunicationTurnResponse(
         session_id=session.session_id,
@@ -1495,7 +2019,7 @@ async def run_fall_conversation_turn(
         canonical_communication_state=latest_session.canonical_communication_state,
         reasoning_decision=latest_session.reasoning_decision,
         execution_state=latest_session.execution_state,
-        interaction=interaction,
+        interaction=latest_interaction,
         communication_analysis=final_analysis,
         reasoning_invoked=reasoning_requested,
         reasoning_status=latest_session.reasoning_status,
@@ -1506,7 +2030,7 @@ async def run_fall_conversation_turn(
         assistant_question=None,
         guidance_steps=_current_guidance_steps_for_response(latest_session, final_analysis),
         quick_replies=final_analysis.quick_replies,
-        assessment=existing_assessment,
+        assessment=latest_assessment,
         execution_updates=latest_session.execution_updates,
         action_states=latest_session.action_states,
         transcript_append=[assistant_message] if assistant_message.text.strip() else [],
@@ -1549,8 +2073,6 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
             patient_answers=patient_answers,
             interaction=session.interaction_input,
             communication_state=session.canonical_communication_state,
-            trigger_dispatch=False,
-            background_tasks=None,
         )
         if fall_session_store.get_session(session_id) is None:
             logger.info(
@@ -1566,13 +2088,6 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
         )
         sync_dispatch_confirmation_task(session_id)
 
-        # Auto-inject ONLY for emergency dispatch and family notification
-        assistant_message, announced_execution_types = _build_critical_status_message(
-            assessment=assessment,
-            execution_updates=execution_updates,
-            announced_execution_types=session.announced_execution_types,
-        )
-
         # Summarize reasoning for the communication agent's next turn
         pending_context = _summarize_for_comm_agent(assessment)
 
@@ -1580,7 +2095,7 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
             session_id=session_id,
             processed_version=session.reasoning_active_version,
             assessment=assessment,
-            assistant_message=assistant_message,
+            assistant_message=None,
             execution_updates=execution_updates,
             pending_reasoning_context=pending_context,
         )
@@ -1590,11 +2105,6 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
                 session_id=session_id,
                 session=refreshed_session,
                 assessment=assessment,
-            )
-        for execution_type in announced_execution_types:
-            fall_session_store.mark_execution_announced(
-                session_id=session_id,
-                execution_type=execution_type,
             )
         logger.info(
             "[Session %s] Phase 1 complete | severity=%s action=%s processed_version=%s rerun=%s",
@@ -1626,6 +2136,12 @@ async def _run_session_reasoning_refresh(session_id: str) -> None:
             )
             refreshed_session = fall_session_store.get_session(session_id)
             if refreshed_session is not None:
+                _store_execution_guidance_assessment(
+                    session_id=session_id,
+                    session=refreshed_session,
+                    guidance=execution_guidance,
+                )
+                refreshed_session = fall_session_store.get_session(session_id) or refreshed_session
                 _store_execution_guidance_state(
                     session_id=session_id,
                     session=refreshed_session,

@@ -164,8 +164,7 @@ async def _dispatch_twilio(incident: Incident) -> dict:
 
     call_sids = [f"CA{uuid4().hex[:16]}" for _ in contact_priority]
 
-    print(f"   [Twilio] Calling {contact_priority}")
-    print(f"   [Twilio] TTS: {tts_message[:80]}...")
+    print(f"   Simulating calls to: {contact_priority}")
 
     return {
         "call_sids": call_sids,
@@ -278,8 +277,7 @@ async def _fire_hospital_webhook(incident: Incident) -> dict:
         "timestamp": datetime.utcnow().isoformat(),
     }
 
-    print(f"   [Webhook] -> {incident.selected_hospital['name']}")
-    print(f"   [Webhook] Payload keys: {list(pre_alert.keys())}")
+    print(f"   Simulating hospital alert...")
 
     return {"sent": True, "status_code": 200, "payload": pre_alert}
 
@@ -302,14 +300,7 @@ async def _run_dispatch(incident_id: str):
         incident.emergency_contacts = profile.get("emergency_contacts", [])
         incident.profile_fetched_at = datetime.utcnow()
 
-        print(f"\n{'=' * 60}")
-        print(f"[Emergency Dispatch] Incident {incident_id[:8]}...")
-        print(f"   Patient: {incident.patient_name}")
-        print(f"   Severity: {incident.severity.value}")
-        print(f"   Flags: {incident.flags}")
-        if incident.ai_decision:
-            print(f"   AI summary: {incident.ai_decision.summary}")
-        print(f"{'=' * 60}")
+        print(f"\n[Emergency Dispatch] Initiated for Incident: {incident_id}")
 
         incident.dispatch_started_at = datetime.utcnow()
         twilio_result, maps_result, location_result = await asyncio.gather(
@@ -352,10 +343,7 @@ async def _run_dispatch(incident_id: str):
         elapsed = (incident.hospital_alerted_at - incident.triggered_at).total_seconds()
         incident.total_elapsed_seconds = round(elapsed, 2)
 
-        print(f"\n   [Done] Dispatch complete in {elapsed:.1f}s")
-        print(f"   Hospital: {incident.selected_hospital['name'] if incident.selected_hospital else 'None'}")
-        print(f"   ETA: {incident.hospital_eta_minutes} minutes")
-        print(f"{'=' * 60}\n")
+        print(f"[Emergency Dispatch] Completed for Incident: {incident_id}\n")
 
         incident.status = IncidentStatus.MONITORING
     except Exception as exc:

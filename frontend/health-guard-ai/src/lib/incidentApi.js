@@ -44,6 +44,16 @@ export async function submitIncidentAnswers(incidentId, payload) {
   return readJson(response, `Failed to save incident reasoning (${response.status})`);
 }
 
+export async function updateIncidentContext(incidentId, payload) {
+  const response = await fetch(`${API_BASE_URL}/api/v1/incidents/${incidentId}/context`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  return readJson(response, `Failed to update incident context (${response.status})`);
+}
+
 export async function executeIncidentAction(incidentId, action) {
   const response = await fetch(`${API_BASE_URL}/api/v1/incidents/${incidentId}/execute`, {
     method: "POST",

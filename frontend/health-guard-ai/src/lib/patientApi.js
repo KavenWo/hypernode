@@ -22,11 +22,13 @@ export function normalizePatientProfile(profile) {
     id: profile.patient_id,
     userId: profile.patient_id,
     patientId: profile.patient_id,
-    sessionUid: profile.session_uid,
+    session_uid: profile.session_uid,
     name: profile.full_name || "Anonymous Patient",
     age: profile.age ?? "",
     bloodType: profile.blood_type || "Unknown",
-    gender: "Unspecified",
+    gender: profile.gender || "Unspecified",
+    primaryLanguage: profile.primary_language || "en",
+    address: profile.address || "",
     avatar: "🙂",
     scenarioLabel: "Session-owned profile",
     profileNote: profile.notes || "This profile belongs to the current anonymous session.",
@@ -34,8 +36,8 @@ export function normalizePatientProfile(profile) {
     medications,
     allergies,
     contacts,
-    bloodThinners: medications.some((item) => String(item).toLowerCase().includes("warfarin")),
-    mobilitySupport: conditions.some((item) => {
+    bloodThinners: profile.blood_thinners ?? medications.some((item) => String(item).toLowerCase().includes("warfarin")),
+    mobilitySupport: profile.mobility_support ?? conditions.some((item) => {
       const value = String(item).toLowerCase();
       return value.includes("mobility") || value.includes("osteo") || value.includes("sarcopenia");
     }),
@@ -82,6 +84,11 @@ function toBackendPayload(patient, sessionUid) {
     full_name: patient.name,
     age: patient.age === "" ? null : Number(patient.age),
     blood_type: patient.bloodType || null,
+    gender: patient.gender || null,
+    primary_language: patient.primaryLanguage || "en",
+    address: patient.address || "",
+    blood_thinners: patient.bloodThinners || false,
+    mobility_support: patient.mobilitySupport || false,
     allergies: patient.allergies || [],
     medications: patient.medications || [],
     chronic_conditions: patient.conditions || [],
@@ -105,23 +112,53 @@ export async function fetchSessionPatients(sessionUid) {
   return payload.map(normalizePatientProfile);
 }
 
-export async function fetchSessionHistory(sessionUid) {
-  const response = await fetch(`${API_BASE_URL}/api/v1/history?session_uid=${encodeURIComponent(sessionUid)}`);
+export async function fetchSessionIncidents(sessionUid) {
+  const response = await fetch(`${API_BASE_URL}/api/v1/incidents/summary?session_uid=${encodeURIComponent(sessionUid)}`);
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload?.detail || `Failed to fetch history (${response.status})`);
+    throw new Error(payload?.detail || `Failed to fetch incidents (${response.status})`);
   }
-  return payload.map((entry) => ({
-    id: entry.history_id,
-    incidentId: entry.incident_id,
-    patientId: entry.patient_id,
-    timestamp: new Date(entry.created_at).toLocaleString("en-MY", { hour12: false }).slice(0, 16),
-    profile: entry.patient_name || entry.patient_id || "Unknown Patient",
-    event: humanizeEvent(entry.event_type),
-    severity: humanizeSeverity(entry.severity),
-    action: humanizeAction(entry.action_taken),
-    summary: entry.summary,
-  }));
+  return payload.map((entry) => {
+    let dateStr = entry.created_at || "";
+    // Robust parsing for UTC from various string formats
+    let parsedDate;
+    if (dateStr.includes("Z") || dateStr.includes("+")) {
+      parsedDate = new Date(dateStr);
+    } else {
+      // If no TZ info, assume UTC as per backend service logic
+      parsedDate = new Date(dateStr.replace(" ", "T") + "Z");
+    }
+    
+    // Fallback if parsing failed
+    if (isNaN(parsedDate.getTime())) {
+        parsedDate = new Date(); // last resort fallback
+    }
+
+    // Format explicitly in Malaysia Time (Asia/Kuala_Lumpur)
+    // Using 24-hour format as typically preferred in MY medical contexts
+    const timestampStr = parsedDate.toLocaleString("en-MY", {
+      timeZone: "Asia/Kuala_Lumpur",
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+
+    return {
+      id: entry.incident_id,
+      incidentId: entry.incident_id,
+      sessionUid: entry.session_uid,
+      patientId: entry.patient_id,
+      timestamp: timestampStr,
+      profile: entry.patient_name || entry.patient_id || "Unknown Patient",
+      event: humanizeEvent(entry.event_type),
+      severity: humanizeSeverity(entry.severity),
+      action: humanizeAction(entry.action_taken),
+      summary: entry.summary,
+    };
+  });
 }
 
 export async function saveSessionPatient(patient, sessionUid) {
@@ -135,4 +172,14 @@ export async function saveSessionPatient(patient, sessionUid) {
     throw new Error(payload?.detail || `Failed to save patient profile (${response.status})`);
   }
   return normalizePatientProfile(payload);
+}
+
+export async function fetchIncidentRecord(incidentId, sessionUid = "") {
+  const query = sessionUid ? `?session_uid=${encodeURIComponent(sessionUid)}` : "";
+  const response = await fetch(`${API_BASE_URL}/api/v1/incidents/${encodeURIComponent(incidentId)}${query}`);
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload?.detail || `Failed to fetch incident (${response.status})`);
+  }
+  return payload;
 }

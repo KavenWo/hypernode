@@ -20,6 +20,8 @@ class PatientProfile(BaseModel):
     user_id: str
     full_name: str
     age: int
+    blood_type: str | None = None
+    gender: str | None = None
     pre_existing_conditions: list[str] = Field(default_factory=list)
     medications: list[str] = Field(default_factory=list)
     allergies: list[str] = Field(default_factory=list)
@@ -99,6 +101,7 @@ class FrontendPatientProfile(BaseModel):
     session_uid: str | None = None
     full_name: str = ""
     age: int | None = None
+    gender: str | None = None
     primary_language: str = "en"
     address: str | None = None
     medical_profile: MedicalProfile = Field(default_factory=MedicalProfile)
@@ -126,20 +129,18 @@ class IncidentRecord(BaseModel):
     video_metadata: dict | None = None
     triage_answers: list[dict] = Field(default_factory=list)
     ai_result: dict | None = None
+    conversation_history: list[dict] = Field(default_factory=list)
+    canonical_communication_state: dict | None = None
+    reasoning_decision: dict | None = None
+    execution_state: dict | None = None
+    protocol_guidance: dict | None = None
+    guidance_steps: list[str] = Field(default_factory=list)
+    reasoning_runs: list[dict] = Field(default_factory=list)
+    execution_updates: list[dict] = Field(default_factory=list)
+    action_states: list[dict] = Field(default_factory=list)
     action_execution: ActionExecutionState = Field(default_factory=ActionExecutionState)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     resolved_at: datetime | None = None
 
 
-class HistoryLogEntry(BaseModel):
-    history_id: str
-    incident_id: str
-    session_uid: str
-    patient_id: str
-    patient_name: str | None = None
-    event_type: str
-    severity: str | None = None
-    action_taken: str | None = None
-    summary: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)

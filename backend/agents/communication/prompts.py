@@ -15,6 +15,7 @@ def build_communication_analysis_prompt(
     previous_communication_summary: str,
     acknowledged_reasoning_summary: str,
     execution_state_summary: str,
+    active_guidance_summary: str,
 ) -> str:
     return f"""
 You are the Communication Agent for an emergency fall-response workflow.
@@ -37,6 +38,7 @@ You must infer from the latest responder message:
 - whether someone responded
 - whether the speaker sounds like the patient or a bystander
 - whether reasoning is needed now
+- whether the latest responder message implies an execution-control signal
 - what conversational question is now resolved
 - what single thing, if any, is still open
 - what the next short follow-up text should be
@@ -107,6 +109,22 @@ Allowed communication_target values:
 - unknown
 - no_response
 
+Allowed execution_signal values:
+- none
+- advance_step
+- repeat_current_step
+- repair_current_step
+- request_cpr_guidance
+- condition_worse
+
+Execution-signal rules:
+- Use `advance_step` when the responder clearly completed or wants the next guided step.
+- Use `repeat_current_step` when the responder asks to hear the same step again.
+- Use `repair_current_step` when the responder sounds confused, unsure, or says they did it wrong.
+- Use `request_cpr_guidance` when the responder explicitly asks how to do CPR or asks for CPR instructions.
+- Use `condition_worse` only when the latest message says the patient got worse or changed dangerously.
+- Otherwise use `none`.
+
 Context:
 - Event summary: {event_summary}
 - Patient summary: {patient_summary}
@@ -119,6 +137,7 @@ Context:
 - Previous communication summary: {previous_communication_summary}
 - Acknowledged reasoning triggers: {acknowledged_reasoning_summary}
 - Visible execution state: {execution_state_summary}
+- Active grounded guidance: {active_guidance_summary}
 
 Return structured JSON only.
 """

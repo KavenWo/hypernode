@@ -5,9 +5,10 @@ import {
   createIncident,
   executeIncidentAction,
   submitIncidentAnswers,
+  updateIncidentContext,
   updateIncidentStatus,
 } from "../../lib/incidentApi";
-import { fetchSessionHistory } from "../../lib/patientApi";
+import { fetchSessionIncidents } from "../../lib/patientApi";
 import DashboardConversationPanel from "../dashboard/DashboardConversationPanel";
 import DashboardHeader from "../dashboard/DashboardHeader";
 import DashboardProfileCard from "../dashboard/DashboardProfileCard";
@@ -16,6 +17,7 @@ import DashboardSessionStateCard from "../dashboard/DashboardSessionStateCard";
 import DashboardVitalsPanel from "../dashboard/DashboardVitalsPanel";
 import DashboardActionCard from "../dashboard/DashboardActionCard";
 import ProfileModal from "../ui/ProfileModal";
+import VideoSelectionModal from "../ui/VideoSelectionModal";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
@@ -36,20 +38,14 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function createHistorySeries(value, variance, min, max) {
-  return Array.from({ length: 10 }, () => Math.round(clamp(value + (Math.random() - 0.5) * variance, min, max)));
-}
-
 function createVitalsState(baseVitals) {
   return {
     hr: baseVitals.hr,
     spo2: baseVitals.spo2,
     bp: baseVitals.bp,
     temp: baseVitals.temp,
-    hrHistory: createHistorySeries(baseVitals.hr, 8, 45, 160),
-    spo2History: createHistorySeries(baseVitals.spo2, 3, 84, 100),
   };
-}
+};
 
 function parseBloodPressure(bp) {
   const [systolicText = "0", diastolicText = "0"] = (bp || "").split("/");
@@ -77,7 +73,6 @@ function makeInteractionPayload(interaction, latestMessage) {
     no_response_timeout: Boolean(interaction.no_response_timeout),
   };
 }
-
 function mapIncidentAction(latestAssessment, latestTurn) {
   const recommendedAction = latestAssessment?.action?.recommended;
   const executionUpdates = latestTurn?.execution_updates || [];
@@ -130,7 +125,21 @@ function buildTriageAnswers(messages, interaction) {
   ];
 }
 
-function deriveIncidentState(latestAssessment, latestTurn, action) {
+function buildIncidentContextPayload(messages, latestTurn) {
+  return {
+    conversation_history: messages || [],
+    canonical_communication_state: latestTurn?.canonical_communication_state || null,
+    reasoning_decision: latestTurn?.reasoning_decision || null,
+    execution_state: latestTurn?.execution_state || null,
+    protocol_guidance: latestTurn?.assessment?.protocol_guidance || null,
+    guidance_steps: latestTurn?.guidance_steps || [],
+    reasoning_runs: latestTurn?.reasoning_runs || [],
+    execution_updates: latestTurn?.execution_updates || [],
+    action_states: latestTurn?.action_states || [],
+  };
+}
+
+function deriveIncidentState(latestAssessment, latestTurn, action, messages) {
   const executionUpdates = latestTurn?.execution_updates || [];
   const dispatchCompleted = executionUpdates.some(
     (item) => item.type === "emergency_dispatch" && item.status === "completed",
@@ -148,26 +157,59 @@ function deriveIncidentState(latestAssessment, latestTurn, action) {
   if (latestAssessment?.clinical_assessment || latestAssessment?.action) {
     return "reasoning";
   }
-  if ((latestTurn?.conversation_history || []).length > 0) {
+  if ((messages || []).length > 0) {
     return "triage";
   }
   return "analyzing";
 }
 
+function deriveLiveAssistantMessage(turn) {
+  const canonicalPrompt = turn?.canonical_communication_state?.latest_prompt;
+  const executionState = turn?.execution_state;
+  const actionStates = turn?.action_states || [];
+  const dispatchState = actionStates.find((item) => item.action_type === "emergency_dispatch") || null;
+  const isDispatchPending =
+    turn?.state === "awaiting_dispatch_confirmation" ||
+    executionState?.dispatch_status === "pending_confirmation" ||
+    dispatchState?.status === "pending_confirmation";
+
+  if (isDispatchPending && canonicalPrompt?.trim()) {
+    return canonicalPrompt;
+  }
+  if (executionState?.phase === "guidance" && canonicalPrompt?.trim()) {
+    return canonicalPrompt;
+  }
+  if (turn?.assistant_message?.trim()) {
+    return turn.assistant_message;
+  }
+  if (canonicalPrompt?.trim()) {
+    return canonicalPrompt;
+  }
+  if (turn?.communication_analysis?.followup_text?.trim()) {
+    return turn.communication_analysis.followup_text;
+  }
+  return "";
+}
+
 export default function Dashboard({
+  isActive = true,
   onNavigate,
-  historyLog,
-  setHistoryLog,
+  incidentLog,
+  setIncidentLog,
   authSession,
   patientProfiles,
   currentPatientId,
-  onSelectPatient,
 }) {
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [showProfileSelector, setShowProfileSelector] = useState(false);
-  const [vitalsMode, setVitalsMode] = useState("normal");
+  const [showVideoModal, setShowVideoModal] = useState(false);
+  const [detectionMode, setDetectionMode] = useState("demo_video");
   const [motionState, setMotionState] = useState("rapid_descent");
   const [runtimeStatus, setRuntimeStatus] = useState(null);
+  const [demoVideos, setDemoVideos] = useState([]);
+  const [demoVideosLoading, setDemoVideosLoading] = useState(false);
+  const [demoVideosError, setDemoVideosError] = useState("");
+  const [selectedVideoId, setSelectedVideoId] = useState("");
+  const [latestVideoAnalysis, setLatestVideoAnalysis] = useState(null);
 
   const [interaction, setInteraction] = useState(DEFAULT_INTERACTION);
   const [sessionId, setSessionId] = useState("");
@@ -180,7 +222,7 @@ export default function Dashboard({
   const [error, setError] = useState("");
   const [streamStatus, setStreamStatus] = useState("idle");
 
-  const [sidebarWidth, setSidebarWidth] = useState(500);
+  const [sidebarWidth, setSidebarWidth] = useState(window.innerWidth * 0.26);
   const isResizing = useRef(false);
   const activeRequestControllerRef = useRef(null);
   const streamRef = useRef(null);
@@ -190,11 +232,6 @@ export default function Dashboard({
   const incidentSyncKeyRef = useRef("");
   const executedIncidentActionsRef = useRef(new Set());
 
-  const profile = patientProfiles.find((item) => item.patientId === currentPatientId) || patientProfiles[0] || DEMO_PROFILES[0];
-  const sessionUid = authSession?.backendSession?.session_uid || "";
-  const baseVitals = getVitalsPreset(profile.userId, vitalsMode);
-  const [vitals, setVitals] = useState(() => createVitalsState(baseVitals));
-
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
@@ -203,18 +240,35 @@ export default function Dashboard({
     incidentIdRef.current = incidentId;
   }, [incidentId]);
 
+  const profile = patientProfiles.find((item) => item.patientId === currentPatientId) || patientProfiles[0] || DEMO_PROFILES[0];
+  const sessionUid = authSession?.backendSession?.session_uid || "";
+  const baseVitals = getVitalsPreset(profile.userId, "normal");
+  const [vitals, setVitals] = useState(() => createVitalsState(baseVitals));
+
   useEffect(() => {
-    function handleMouseMove(e) {
+    setVitals(createVitalsState(baseVitals));
+  }, [profile.userId]);
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
       if (!isResizing.current) return;
-      const newWidth = document.body.clientWidth - e.clientX;
-      setSidebarWidth(Math.max(300, Math.min(800, newWidth)));
-    }
-    function handleMouseUp() {
+      const newWidth = window.innerWidth - e.clientX;
+      const minW = window.innerWidth * 0.25;
+      const maxW = window.innerWidth * 0.45;
+      
+      if (newWidth >= minW && newWidth <= maxW) {
+        setSidebarWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
       if (isResizing.current) {
         isResizing.current = false;
         document.body.style.cursor = "default";
+        document.body.style.userSelect = "auto";
       }
-    }
+    };
+
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
     return () => {
@@ -224,34 +278,48 @@ export default function Dashboard({
   }, []);
 
   useEffect(() => {
-    setVitals(createVitalsState(baseVitals));
-    setMotionState(vitalsMode === "abnormal" ? "rapid_descent" : "stumble");
-    resetConversationState();
-  }, [baseVitals, profile.userId, vitalsMode]);
-
-  useEffect(() => {
     const interval = setInterval(() => {
       setVitals((current) => {
-        const hrFloor = vitalsMode === "abnormal" ? baseVitals.hr - 10 : baseVitals.hr - 6;
-        const hrCeiling = vitalsMode === "abnormal" ? baseVitals.hr + 10 : baseVitals.hr + 6;
-        const spo2Floor = vitalsMode === "abnormal" ? baseVitals.spo2 - 2 : baseVitals.spo2 - 1;
-        const spo2Ceiling = vitalsMode === "abnormal" ? baseVitals.spo2 + 2 : baseVitals.spo2 + 1;
+        const hrFloor = baseVitals.hr - 4;
+        const hrCeiling = baseVitals.hr + 4;
+        const spo2Floor = baseVitals.spo2 - 1;
+        const spo2Ceiling = baseVitals.spo2 + 1;
 
         const nextHr = Math.round(clamp(current.hr + (Math.random() - 0.5) * 4, hrFloor, hrCeiling));
-        const nextSpo2 = Math.round(clamp(current.spo2 + (Math.random() - 0.5) * 2, spo2Floor, spo2Ceiling));
+        const nextSpo2 = Math.round(clamp(current.spo2 + (Math.random() - 0.5) * 1.5, spo2Floor, spo2Ceiling));
+
+        const bpParts = (baseVitals.bp || "120/80").split("/");
+        const targetSys = Number(bpParts[0] || 120);
+        const targetDia = Number(bpParts[1] || 80);
+
+        const currentParts = (current.bp || baseVitals.bp).split("/");
+        const currentSys = Number(currentParts[0] || targetSys);
+        const currentDia = Number(currentParts[1] || targetDia);
+
+        const sysFloor = targetSys - 8;
+        const sysCeiling = targetSys + 8;
+        const diaFloor = targetDia - 6;
+        const diaCeiling = targetDia + 6;
+
+        const nextSys = Math.round(clamp(currentSys + (Math.random() - 0.5) * 4, sysFloor, sysCeiling));
+        const nextDia = Math.round(clamp(currentDia + (Math.random() - 0.5) * 3, diaFloor, diaCeiling));
+        const nextBp = `${nextSys}/${nextDia}`;
+
+        const nextTemp = Number((current.temp + (Math.random() - 0.5) * 0.05).toFixed(1));
+        const nextTempClamped = clamp(nextTemp, baseVitals.temp - 0.3, baseVitals.temp + 0.3);
 
         return {
           ...current,
           hr: nextHr,
           spo2: nextSpo2,
-          hrHistory: [...current.hrHistory.slice(1), nextHr],
-          spo2History: [...current.spo2History.slice(1), nextSpo2],
+          bp: nextBp,
+          temp: nextTempClamped,
         };
       });
-    }, 2500);
+    }, 2800);
 
     return () => clearInterval(interval);
-  }, [baseVitals.hr, baseVitals.spo2, vitalsMode]);
+  }, [baseVitals.hr, baseVitals.spo2, baseVitals.bp]);
 
   useEffect(() => {
     let ignore = false;
@@ -269,12 +337,56 @@ export default function Dashboard({
             backend_ok: false,
             gemini_configured: false,
             vertex_search_configured: false,
+            adk_enabled: false,
           });
         }
       }
     }
 
     loadRuntimeStatus();
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadDemoVideos() {
+      setDemoVideosLoading(true);
+      setDemoVideosError("");
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/demo-videos`);
+        if (!response.ok) {
+          throw new Error(`Demo videos failed (${response.status})`);
+        }
+        const payload = await response.json();
+        const videos = (payload.videos || []).map((video) => ({
+          id: video.id,
+          label: video.label,
+          description: video.description,
+          summary: video.summary,
+          sourceType: video.source_type,
+          available: Boolean(video.available),
+          videoUrl: `${API_BASE_URL}${video.video_url}`,
+        }));
+        if (!ignore) {
+          setDemoVideos(videos);
+          setSelectedVideoId((current) => current || videos.find((item) => item.available)?.id || "");
+        }
+      } catch (loadError) {
+        if (!ignore) {
+          setDemoVideos([]);
+          setDemoVideosError(loadError.message || "Unable to load demo videos.");
+        }
+      } finally {
+        if (!ignore) {
+          setDemoVideosLoading(false);
+        }
+      }
+    }
+
+    loadDemoVideos();
     return () => {
       ignore = true;
     };
@@ -288,6 +400,19 @@ export default function Dashboard({
     if (pollingRef.current) {
       window.clearInterval(pollingRef.current);
       pollingRef.current = null;
+    }
+  }
+
+  function clearActiveSessionState(message = "") {
+    stopSessionSync();
+    setSessionId("");
+    setLatestTurn(null);
+    setMessages([]);
+    setLatestAssessment(null);
+    setStreamStatus("idle");
+    setPhase("idle");
+    if (message) {
+      setError(message);
     }
   }
 
@@ -306,8 +431,12 @@ export default function Dashboard({
         return current;
       }
       const nextAnalysis = payload.latest_analysis || current.communication_analysis;
-      const nextAssistantMessage =
-        nextAnalysis?.followup_text ||
+      const payloadAssistantMessage =
+        deriveLiveAssistantMessage({
+          ...current,
+          ...payload,
+          communication_analysis: nextAnalysis,
+        }) ||
         payload.conversation_history?.filter((message) => message.role === "assistant").at(-1)?.text ||
         current.assistant_message;
       const nextGuidanceSteps = nextAnalysis?.immediate_step
@@ -326,8 +455,9 @@ export default function Dashboard({
         reasoning_run_count: payload.reasoning_run_count ?? current.reasoning_run_count ?? 0,
         reasoning_reason: payload.reasoning_reason,
         reasoning_error: payload.reasoning_error,
+        reasoning_runs: payload.reasoning_runs || current.reasoning_runs || [],
         assessment: payload.assessment || current.assessment,
-        assistant_message: nextAssistantMessage,
+        assistant_message: payloadAssistantMessage,
         guidance_steps: nextGuidanceSteps,
         quick_replies: nextAnalysis?.quick_replies || current.quick_replies || [],
         execution_updates: payload.execution_updates || current.execution_updates || [],
@@ -337,8 +467,11 @@ export default function Dashboard({
   }
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!isActive || !sessionId) {
       stopSessionSync();
+      if (!isActive) {
+        setStreamStatus("idle");
+      }
       return undefined;
     }
 
@@ -347,6 +480,12 @@ export default function Dashboard({
     async function fetchSessionState() {
       try {
         const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-state/${sessionId}`);
+        if (response.status === 404) {
+          if (!cancelled) {
+            clearActiveSessionState("The live session is no longer available.");
+          }
+          return;
+        }
         if (!response.ok) {
           throw new Error(`Session state failed (${response.status})`);
         }
@@ -390,6 +529,12 @@ export default function Dashboard({
       applySessionState(payload);
     });
 
+    stream.addEventListener("session_closed", () => {
+      if (!cancelled) {
+        clearActiveSessionState("The live session has ended.");
+      }
+    });
+
     stream.onerror = () => {
       stream.close();
       if (streamRef.current === stream) {
@@ -403,7 +548,7 @@ export default function Dashboard({
       stopSessionSync();
       setStreamStatus("idle");
     };
-  }, [sessionId]);
+  }, [isActive, sessionId]);
 
   useEffect(() => {
     if (!incidentId || !sessionUid) {
@@ -411,7 +556,7 @@ export default function Dashboard({
     }
 
     const action = mapIncidentAction(latestAssessment, latestTurn);
-    const state = deriveIncidentState(latestAssessment, latestTurn, action);
+    const state = deriveIncidentState(latestAssessment, latestTurn, action, messages);
     const triageAnswers = buildTriageAnswers(messages, interaction);
     const aiDecision = {
       action,
@@ -445,6 +590,7 @@ export default function Dashboard({
           severity: mapIncidentSeverity(latestAssessment),
           final_action: action,
         });
+        await updateIncidentContext(incidentId, buildIncidentContextPayload(messages, latestTurn));
 
         await updateIncidentStatus(incidentId, { state });
 
@@ -464,9 +610,9 @@ export default function Dashboard({
         }
 
         if (!cancelled && ["action_taken", "resolved"].includes(state)) {
-          const refreshedHistory = await fetchSessionHistory(sessionUid);
+          const refreshedIncidents = await fetchSessionIncidents(sessionUid);
           if (!cancelled) {
-            setHistoryLog(refreshedHistory);
+            setIncidentLog(refreshedIncidents);
           }
         }
       } catch (syncError) {
@@ -481,7 +627,7 @@ export default function Dashboard({
     return () => {
       cancelled = true;
     };
-  }, [incidentId, interaction, latestAssessment, latestTurn, messages, sessionUid, setHistoryLog]);
+  }, [incidentId, interaction, latestAssessment, latestTurn, messages, sessionUid, setIncidentLog]);
 
   function resetConversationState() {
     setInteraction(DEFAULT_INTERACTION);
@@ -490,6 +636,7 @@ export default function Dashboard({
     setMessages([]);
     setLatestAssessment(null);
     setLatestTurn(null);
+    setLatestVideoAnalysis(null);
     setDraftMessage("");
     setError("");
     setStreamStatus("idle");
@@ -498,6 +645,10 @@ export default function Dashboard({
     executedIncidentActionsRef.current = new Set();
     stopSessionSync();
   }
+
+  const selectedVideo = demoVideos.find((video) => video.id === selectedVideoId) || null;
+
+
 
   function abortActiveRequest() {
     if (activeRequestControllerRef.current) {
@@ -530,6 +681,23 @@ export default function Dashboard({
     }
   }
 
+  async function stopSession() {
+    const activeSessionId = sessionId || sessionIdRef.current;
+    abortActiveRequest();
+    stopSessionSync();
+    clearActiveSessionState();
+
+    if (activeSessionId) {
+      try {
+        await fetch(`${API_BASE_URL}/api/v1/events/fall/session-stop/${activeSessionId}`, {
+          method: "POST",
+        });
+      } catch {
+        // Logging failed but we already stopped locally
+      }
+    }
+  }
+
   async function startSession() {
     abortActiveRequest();
     const controller = new AbortController();
@@ -540,17 +708,62 @@ export default function Dashboard({
     const bloodPressure = parseBloodPressure(vitals.bp);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-turn`, {
+      let videoAnalysis = null;
+      let eventPayload;
+      if (detectionMode === "demo_video" && selectedVideo) {
+        setPhase("analyzing_video");
+        const analysisResponse = await fetch(`${API_BASE_URL}/api/v1/events/fall/demo-videos/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            user_id: profile.userId,
+            video_id: selectedVideo.id,
+          }),
+        });
+
+        const analysisPayload = await analysisResponse.json().catch(() => ({}));
+        if (!analysisResponse.ok) {
+          throw new Error(analysisPayload?.detail || `Video analysis failed (${analysisResponse.status})`);
+        }
+
+        videoAnalysis = analysisPayload;
+        setLatestVideoAnalysis(analysisPayload);
+        if (!analysisPayload.fall_detected) {
+          setError(analysisPayload.summary || "Gemini did not detect a fall in the selected clip.");
+          setPhase("idle");
+          return;
+        }
+
+        eventPayload = {
+          user_id: profile.userId,
+          timestamp: new Date().toISOString(),
+          motion_state: analysisPayload.motion_state,
+          confidence_score: Number(analysisPayload.confidence_score),
+          video_id: analysisPayload.video_id,
+          video_source: analysisPayload.video_source,
+          video_summary: analysisPayload.summary,
+        };
+      } else {
+        setLatestVideoAnalysis(null);
+        eventPayload = {
+          user_id: profile.userId,
+          timestamp: new Date().toISOString(),
+          motion_state: motionState,
+          confidence_score: 0.98,
+          video_id: null,
+          video_source: "dashboard_simulation",
+          video_summary: null,
+        };
+      }
+
+      setPhase("starting");
+      const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          event: {
-            user_id: profile.userId,
-            timestamp: new Date().toISOString(),
-            motion_state: motionState,
-            confidence_score: 0.98,
-          },
+          event: eventPayload,
           vitals: {
             user_id: profile.userId,
             heart_rate: Number(vitals.hr),
@@ -559,10 +772,6 @@ export default function Dashboard({
             blood_oxygen_sp02: Number(vitals.spo2),
           },
           interaction: makeInteractionPayload(interaction, ""),
-          session_id: null,
-          latest_responder_message: "",
-          conversation_history: [],
-          previous_assessment: null,
         }),
       });
 
@@ -571,27 +780,38 @@ export default function Dashboard({
       }
 
       const payload = await response.json();
-      setSessionId(payload.session_id);
-      setLatestTurn(payload);
-      setLatestAssessment(payload.assessment || null);
-      setMessages(payload.transcript_append || []);
-      setPhase("session_ready");
+
       if (sessionUid) {
         const incident = await createIncident({
           sessionUid,
           patientId: profile.patientId,
           simulationTrigger: {
-            motion_state: motionState,
-            confidence_score: 0.98,
+            motion_state: eventPayload.motion_state,
+            confidence_score: eventPayload.confidence_score,
+            video_id: eventPayload.video_id,
             realtime_session_id: payload.session_id,
           },
           videoMetadata: {
-            source: "dashboard_simulation",
-            vitals_mode: vitalsMode,
+            source: eventPayload.video_source,
+            video_id: eventPayload.video_id,
+            video_label: videoAnalysis?.video_label || selectedVideo?.label || null,
+            summary: eventPayload.video_summary,
+            analysis_model: videoAnalysis?.analysis_model || null,
+            vitals_mode: "normal",
           },
         });
         setIncidentId(incident.incident_id);
+        await updateIncidentContext(
+          incident.incident_id,
+          buildIncidentContextPayload(payload.transcript_append || [], payload),
+        );
       }
+
+      setSessionId(payload.session_id);
+      setLatestTurn(payload);
+      setLatestAssessment(payload.assessment || null);
+      setMessages(payload.transcript_append || []);
+      setPhase("session_ready");
     } catch (requestError) {
       if (requestError.name === "AbortError") {
         setPhase("idle");
@@ -606,15 +826,15 @@ export default function Dashboard({
     }
   }
 
-  async function sendTurn() {
-    if (!draftMessage.trim()) {
+  async function sendTurn(manualMessage) {
+    const messageText = (manualMessage || draftMessage).trim();
+    if (!messageText) {
       return;
     }
 
     abortActiveRequest();
     const controller = new AbortController();
     activeRequestControllerRef.current = controller;
-    const messageText = draftMessage.trim();
     setDraftMessage("");
     setPhase("sending");
     setError("");
@@ -636,17 +856,21 @@ export default function Dashboard({
     const bloodPressure = parseBloodPressure(vitals.bp);
 
     try {
+      const eventPayload = {
+        user_id: profile.userId,
+        timestamp: new Date().toISOString(),
+        motion_state: detectionMode === "demo_video" && latestVideoAnalysis ? latestVideoAnalysis.motion_state : motionState,
+        confidence_score: detectionMode === "demo_video" && latestVideoAnalysis ? Number(latestVideoAnalysis.confidence_score) : 0.98,
+        video_id: detectionMode === "demo_video" && latestVideoAnalysis ? latestVideoAnalysis.video_id : null,
+        video_source: detectionMode === "demo_video" && latestVideoAnalysis ? latestVideoAnalysis.video_source : "dashboard_simulation",
+        video_summary: detectionMode === "demo_video" && latestVideoAnalysis ? latestVideoAnalysis.summary : null,
+      };
       const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-turn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          event: {
-            user_id: profile.userId,
-            timestamp: new Date().toISOString(),
-            motion_state: motionState,
-            confidence_score: 0.98,
-          },
+          event: eventPayload,
           vitals: {
             user_id: profile.userId,
             heart_rate: Number(vitals.hr),
@@ -670,7 +894,7 @@ export default function Dashboard({
       setSessionId(payload.session_id);
       setLatestTurn(payload);
       setLatestAssessment(payload.assessment || latestAssessment);
-      
+
       // Update messages with the real response from the backend
       const serverAppended = payload.transcript_append || [];
       setMessages((current) => {
@@ -695,7 +919,12 @@ export default function Dashboard({
   }
 
   async function controlAction(actionType, decision) {
-    if (!sessionId) {
+    const activeSessionId =
+      latestTurn?.session_id ||
+      sessionIdRef.current ||
+      sessionId;
+
+    if (!activeSessionId) {
       return;
     }
 
@@ -705,7 +934,7 @@ export default function Dashboard({
     setError("");
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-action/${sessionId}`, {
+      const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-action/${activeSessionId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -720,6 +949,9 @@ export default function Dashboard({
       }
 
       const payload = await response.json();
+      if (payload.session_id) {
+        setSessionId(payload.session_id);
+      }
       setLatestTurn((current) => {
         if (!current) {
           return current;
@@ -730,30 +962,51 @@ export default function Dashboard({
         if (!nextActionStates.some((state) => state.action_type === payload.action_state.action_type)) {
           nextActionStates.push(payload.action_state);
         }
-        return {
+        const nextTurn = {
           ...current,
+          state: payload.state ?? current.state,
+          canonical_communication_state:
+            payload.canonical_communication_state || current.canonical_communication_state,
+          reasoning_decision: payload.reasoning_decision || current.reasoning_decision,
+          execution_state: payload.execution_state || current.execution_state,
           action_states: nextActionStates,
           execution_updates: payload.execution_updates || current.execution_updates || [],
         };
+        return {
+          ...nextTurn,
+          assistant_message: deriveLiveAssistantMessage(nextTurn) || current.assistant_message,
+        };
       });
+
+      setPhase("session_ready");
+
       if (incidentIdRef.current) {
-        if (decision === "confirm" && actionType === "emergency_dispatch") {
-          await executeIncidentAction(incidentIdRef.current, "call_ambulance");
-          executedIncidentActionsRef.current.add(`${incidentIdRef.current}:call_ambulance`);
-          if (sessionUid) {
-            const refreshedHistory = await fetchSessionHistory(sessionUid);
-            setHistoryLog(refreshedHistory);
+        try {
+          if (decision === "confirm" && actionType === "emergency_dispatch") {
+            await executeIncidentAction(incidentIdRef.current, "call_ambulance");
+            executedIncidentActionsRef.current.add(`${incidentIdRef.current}:call_ambulance`);
+            if (sessionUid) {
+              const refreshedIncidents = await fetchSessionIncidents(sessionUid);
+              setIncidentLog(refreshedIncidents);
+            }
           }
-        }
-        if (decision === "cancel") {
-          await updateIncidentStatus(incidentIdRef.current, { state: "monitoring", summary: "Emergency dispatch was canceled by the responder." });
+          if (decision === "cancel") {
+            await updateIncidentStatus(incidentIdRef.current, {
+              state: "monitoring",
+              summary: "Emergency dispatch was canceled by the responder.",
+            });
+          }
+        } catch (syncError) {
+          console.error("Incident sync failed after session action succeeded", syncError);
+          setError("Dispatch decision applied, but incident history sync failed.");
         }
       }
     } catch (requestError) {
       if (requestError.name === "AbortError") {
-        return;
+        throw requestError;
       }
       setError(requestError.message || "Unable to control the session action.");
+      throw requestError;
     } finally {
       if (activeRequestControllerRef.current === controller) {
         activeRequestControllerRef.current = null;
@@ -766,61 +1019,70 @@ export default function Dashboard({
       <DashboardHeader runtimeStatus={runtimeStatus} authSession={authSession} />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        
+
         {/* Left Main Dashboard Area */}
         <div className="page" style={{ paddingTop: 0, overflowY: "auto", flex: 1 }}>
-          <div className="dash-top">
+          <div className="section-label">Patient Profile & Clinical Vitals</div>
+          <div className="dash-top" style={{ marginBottom: 16 }}>
             <DashboardProfileCard
               profile={profile}
-              patientProfiles={patientProfiles.length ? patientProfiles : [profile]}
-              currentPatientId={currentPatientId}
-              showProfileSelector={showProfileSelector}
               setShowProfileModal={setShowProfileModal}
-              setShowProfileSelector={setShowProfileSelector}
-              onSelectPatient={onSelectPatient}
               onNavigateToProfile={() => onNavigate(PAGES.PROFILE)}
             />
-            <DashboardVitalsPanel vitals={vitals} vitalsMode={vitalsMode} setVitalsMode={setVitalsMode} />
+            <DashboardVitalsPanel vitals={vitals} />
           </div>
 
-          <div className="section-label">Communication Agent - real dashboard session flow</div>
-
-          <div className="dashboard-stack">
-            <div className="grid-2">
-              <DashboardSessionControlCard
-                profile={profile}
-                runtimeStatus={runtimeStatus}
-                motionState={motionState}
-                setMotionState={setMotionState}
-                phase={phase}
-                streamStatus={streamStatus}
-                startSession={startSession}
-                resetConversation={resetConversation}
-              />
-              <DashboardActionCard
-                latestAssessment={latestAssessment}
-                latestTurn={latestTurn}
-                onActionDecision={controlAction}
-              />
-            </div>
-            <DashboardSessionStateCard
-              sessionId={sessionId}
-              streamStatus={streamStatus}
-              latestTurn={latestTurn}
-              latestAssessment={latestAssessment}
-              error={error}
-              historyCount={historyLog.length}
+          <div className="section-label">Trigger the Simulation</div>
+          <div style={{ marginBottom: 16 }}>
+            <DashboardSessionControlCard
+              runtimeStatus={runtimeStatus}
+              detectionMode={detectionMode}
+              selectedVideo={selectedVideo}
+              onOpenVideoSelector={() => setShowVideoModal(true)}
               phase={phase}
+              streamStatus={streamStatus}
+              startSession={startSession}
+              stopSession={stopSession}
+              resetConversation={resetConversation}
             />
+          </div>
+
+          <div className="section-label">Monitor the Agents</div>
+          <div className="dashboard-stack">
+            <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+              {/* Left Column: Agent Workflow */}
+              <div style={{ flex: 1.35 }}>
+                <DashboardSessionStateCard
+                  sessionId={sessionId}
+                  streamStatus={streamStatus}
+                  latestTurn={latestTurn}
+                  latestAssessment={latestAssessment}
+                  latestVideoAnalysis={latestVideoAnalysis}
+                  error={error}
+                  historyCount={incidentLog.length}
+                  phase={phase}
+                />
+              </div>
+
+              {/* Right Column: Live Actions */}
+              <div style={{ flex: 0.95, minWidth: 320 }}>
+                <DashboardActionCard
+                  latestAssessment={latestAssessment}
+                  latestTurn={latestTurn}
+                  onActionDecision={controlAction}
+                />
+              </div>
+            </div>
           </div>
         </div>
 
         {/* Resizer */}
-        <div 
+        <div
           className="dashboard-resizer"
           onMouseDown={() => {
             isResizing.current = true;
             document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
           }}
         />
 
@@ -839,6 +1101,21 @@ export default function Dashboard({
       </div>
 
       {showProfileModal && <ProfileModal profile={profile} onClose={() => setShowProfileModal(false)} />}
+      {showVideoModal && (
+        <VideoSelectionModal
+          videos={demoVideos}
+          selectedVideoId={selectedVideoId}
+          loading={demoVideosLoading}
+          error={demoVideosError}
+          onClose={() => setShowVideoModal(false)}
+          onSelect={(video) => {
+            setSelectedVideoId(video.id);
+            setMotionState(video.motionState);
+            setDetectionMode("demo_video");
+            setShowVideoModal(false);
+          }}
+        />
+      )}
     </div>
   );
 }

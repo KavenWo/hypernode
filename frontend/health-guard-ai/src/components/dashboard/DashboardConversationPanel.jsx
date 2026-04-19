@@ -1,38 +1,19 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+
+const AUTO_NO_RESPONSE_SECONDS = 10;
+const AUTO_NO_RESPONSE_TRIGGER = "no_response_";
 
 function ChatBubble({ message }) {
-  const { role, text, reasoning_input_version, comm_reasoning_required, comm_reasoning_reason, session_version } = message;
+  const { role, text } = message;
   const isAssistant = role === "assistant";
-  const showCommDecision = role !== "assistant" && comm_reasoning_required !== null && comm_reasoning_required !== undefined;
 
   return (
     <div style={{ display: "flex", justifyContent: isAssistant ? "flex-start" : "flex-end" }}>
-      <div
-        className="dashboard-chat-bubble"
-        style={{
-          background: isAssistant
-            ? "linear-gradient(135deg, var(--surface) 0%, #fef3c7 100%)"
-            : "linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%)",
-        }}
-      >
+      <div className={`dashboard-chat-bubble ${isAssistant ? "bubble-assistant" : "bubble-user"}`}>
         <div className="dashboard-chat-role">
-          {isAssistant ? "Communication Agent" : role}
+          {isAssistant ? "Communication Agent" : "User"}
         </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-          {reasoning_input_version != null && <span className="tag">V{reasoning_input_version}</span>}
-          {session_version != null && <span className="tag">S{session_version}</span>}
-          {showCommDecision && (
-            <span className={`tag ${comm_reasoning_required ? "tag-red" : ""}`}>
-              Rerun {comm_reasoning_required ? "Yes" : "No"}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 14, color: "var(--text)", lineHeight: 1.6 }}>{text}</div>
-        {showCommDecision && comm_reasoning_reason && (
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
-            Comm decision: {comm_reasoning_reason}
-          </div>
-        )}
+        <div style={{ fontSize: 11, color: "var(--text)", lineHeight: 1.6 }}>{text}</div>
       </div>
     </div>
   );
@@ -41,15 +22,10 @@ function ChatBubble({ message }) {
 function TypingBubble() {
   return (
     <div style={{ display: "flex", justifyContent: "flex-start" }}>
-      <div
-        className="dashboard-chat-bubble dashboard-typing-bubble"
-        style={{ background: "linear-gradient(135deg, var(--surface) 0%, #fef3c7 100%)" }}
-      >
+      <div className="dashboard-chat-bubble bubble-assistant dashboard-typing-bubble">
         <div className="dashboard-chat-role">Communication Agent</div>
-        <div className="typing-dots" aria-label="Agent typing">
-          <span />
-          <span />
-          <span />
+        <div style={{ fontSize: 10, color: "var(--text-muted)", fontStyle: "italic", marginTop: 4 }}>
+          Thinking....
         </div>
       </div>
     </div>
@@ -67,61 +43,119 @@ export default function DashboardConversationPanel({
 }) {
   const hasAssistantMessage = messages.some((message) => message.role === "assistant" && message.text?.trim());
   const isAgentTyping = phase === "sending" || (phase === "starting" && !hasAssistantMessage);
-  const canonicalState = latestTurn?.state;
-  const latestPrompt = latestTurn?.canonical_communication_state?.latest_prompt;
+  const isReasoningActive = latestTurn?.reasoning_status === "pending" || latestTurn?.state === "reasoning_in_progress";
+  const isAwaitingReply = latestTurn?.communication_analysis?.guidance_intent !== "instruction";
+  const isDispatchConfirmationPending =
+    latestTurn?.state === "awaiting_dispatch_confirmation" ||
+    latestTurn?.execution_state?.dispatch_status === "pending_confirmation" ||
+    (latestTurn?.action_states || []).some(
+      (state) => state.action_type === "emergency_dispatch" && state.status === "pending_confirmation",
+    );
+  const isDispatchCompleted =
+    latestTurn?.execution_state?.dispatch_status === "confirmed" ||
+    latestTurn?.execution_state?.dispatch_status === "auto_dispatched" ||
+    latestTurn?.execution_state?.dispatch_status === "dispatched" ||
+    (latestTurn?.action_states || []).some(
+      (state) => state.action_type === "emergency_dispatch" && state.status === "completed",
+    ) ||
+    (latestTurn?.execution_updates || []).some(
+      (update) => update.type === "emergency_dispatch" && update.status === "completed",
+    );
+  const [showPostReasoningReply, setShowPostReasoningReply] = useState(false);
+  const [autoNoResponseCountdown, setAutoNoResponseCountdown] = useState(0);
+  const previousReasoningStatusRef = useRef(latestTurn?.reasoning_status || "");
   const streamEndRef = useRef(null);
+  const noResponseTimerRef = useRef(null);
+  const sendTurnRef = useRef(sendTurn);
+
+  const lastMessage = messages[messages.length - 1] || null;
+  const lastAssistantMessageIndex = [...messages]
+    .map((message, index) => ({ message, index }))
+    .reverse()
+    .find((entry) => entry.message.role === "assistant" && entry.message.text?.trim())?.index ?? -1;
+  const lastAssistantMessage = lastAssistantMessageIndex >= 0 ? messages[lastAssistantMessageIndex] : null;
+  const shouldShowNoResponseCountdown =
+    Boolean(lastAssistantMessage) &&
+    lastMessage?.role === "assistant" &&
+    isAwaitingReply &&
+    !isAgentTyping &&
+    !isReasoningActive &&
+    !isDispatchConfirmationPending &&
+    !isDispatchCompleted &&
+    phase !== "sending" &&
+    !draftMessage.trim();
+
+  const recommendedReplies = phase === "sending"
+    ? []
+    : [
+        ...(showPostReasoningReply ? ["What should I do now?"] : []),
+        ...(latestTurn?.quick_replies || []),
+      ].filter((reply, index, replies) => replies.indexOf(reply) === index);
 
   useEffect(() => {
     streamEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isAgentTyping]);
 
+  useEffect(() => {
+    sendTurnRef.current = sendTurn;
+  }, [sendTurn]);
+
+  useEffect(() => {
+    const previousStatus = previousReasoningStatusRef.current;
+    const currentStatus = latestTurn?.reasoning_status || "";
+
+    if (previousStatus === "pending" && currentStatus === "completed") {
+      setShowPostReasoningReply(true);
+      if (!draftMessage.trim()) {
+        setDraftMessage("What should I do now?");
+      }
+    }
+
+    if (currentStatus === "pending") {
+      setShowPostReasoningReply(false);
+    }
+
+    previousReasoningStatusRef.current = currentStatus;
+  }, [draftMessage, latestTurn?.reasoning_status, setDraftMessage]);
+
+  useEffect(() => {
+    if (!shouldShowNoResponseCountdown) {
+      setAutoNoResponseCountdown(0);
+      if (noResponseTimerRef.current) {
+        window.clearInterval(noResponseTimerRef.current);
+        noResponseTimerRef.current = null;
+      }
+      return undefined;
+    }
+
+    setAutoNoResponseCountdown(AUTO_NO_RESPONSE_SECONDS);
+    if (noResponseTimerRef.current) {
+      window.clearInterval(noResponseTimerRef.current);
+    }
+
+    noResponseTimerRef.current = window.setInterval(() => {
+      setAutoNoResponseCountdown((current) => {
+        if (current <= 1) {
+          window.clearInterval(noResponseTimerRef.current);
+          noResponseTimerRef.current = null;
+          sendTurnRef.current(AUTO_NO_RESPONSE_TRIGGER);
+          return 0;
+        }
+        return current - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (noResponseTimerRef.current) {
+        window.clearInterval(noResponseTimerRef.current);
+        noResponseTimerRef.current = null;
+      }
+    };
+  }, [lastAssistantMessageIndex, shouldShowNoResponseCountdown]);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", flex: 1, padding: "24px", overflow: "hidden" }}>
-      <div className="card-title" style={{ marginBottom: 20 }}>Conversation Loop</div>
-
-      {latestTurn?.interaction && (
-        <div style={{ marginBottom: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <span className="tag">Target - {latestTurn.interaction.communication_target}</span>
-          <span className="tag">Mode - {latestTurn.interaction.interaction_mode}</span>
-          <span className="tag">Style - {latestTurn.interaction.guidance_style}</span>
-          <span className="tag">Reasoning - {latestTurn.reasoning_status || "idle"}</span>
-          {canonicalState && <span className="tag">State - {canonicalState}</span>}
-        </div>
-      )}
-
-      {latestPrompt && (
-        <div
-          style={{
-            marginBottom: 14,
-            padding: "10px 12px",
-            borderRadius: 12,
-            border: "1px solid var(--border)",
-            background: "var(--surface)",
-            fontSize: 13,
-            color: "var(--text-sub)",
-            lineHeight: 1.6,
-          }}
-        >
-          <strong style={{ color: "var(--text)" }}>Current Prompt:</strong> {latestPrompt}
-        </div>
-      )}
-
-      {canonicalState === "optional_flags_check" && (
-        <div
-          style={{
-            marginBottom: 14,
-            padding: "10px 12px",
-            borderRadius: 12,
-            border: "1px solid var(--border)",
-            background: "var(--surface)",
-            fontSize: 13,
-            color: "var(--text-sub)",
-            lineHeight: 1.6,
-          }}
-        >
-          <strong style={{ color: "var(--text)" }}>Signal Extraction:</strong> At this step the communication agent is still using AI to interpret the reply, but it is only collecting the allowed flags: bleeding, pain, or mobility issues.
-        </div>
-      )}
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+      <div className="card-title" style={{ margin: "20px 20px 10px" }}>Conversation Loop</div>
 
       {messages.length === 0 && (
         <div className="empty-state" style={{ minHeight: 140, marginBottom: 14 }}>
@@ -135,49 +169,100 @@ export default function DashboardConversationPanel({
 
       <div className="dashboard-chat-stream">
         {messages.map((message, index) => (
-          <ChatBubble key={`${message.role}-${message.session_version ?? "na"}-${index}`} message={message} />
+          <ChatBubble key={`${message.role}-${index}`} message={message} />
         ))}
+        {shouldShowNoResponseCountdown && autoNoResponseCountdown > 0 && (
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <div
+              className="dashboard-chat-bubble bubble-user"
+              style={{
+                borderColor: "rgba(220, 38, 38, 0.35)",
+                boxShadow: "0 0 0 1px rgba(220, 38, 38, 0.08)",
+              }}
+            >
+              <div className="dashboard-chat-role">User</div>
+              <div style={{ fontSize: 11, color: "var(--text)", lineHeight: 1.6 }}>
+                No response in {autoNoResponseCountdown}s...
+              </div>
+            </div>
+          </div>
+        )}
         {isAgentTyping && <TypingBubble />}
         <div ref={streamEndRef} />
       </div>
 
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+      <div style={{ borderTop: "1px solid var(--border)", padding: "14px 20px 24px" }}>
+        {recommendedReplies.length > 0 && (
+          <div style={{ marginBottom: 14 }}>
+            <div
+              style={{
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--text-muted)",
+                marginBottom: 8,
+              }}
+            >
+              Recommended Responses
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {recommendedReplies.map((reply) => (
+                <button
+                  key={reply}
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    if (reply === "What should I do now?") {
+                      setShowPostReasoningReply(false);
+                    }
+                    sendTurn(reply);
+                  }}
+                  disabled={isReasoningActive}
+                >
+                  {reply}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="form-group">
-          <label className="form-label">Next Patient or Bystander Message</label>
           <textarea
             className="form-input"
+            style={{ resize: "none" }}
             rows="3"
             value={draftMessage}
             onChange={(event) => setDraftMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                if (draftMessage.trim() && phase !== "sending" && latestTurn) {
+                if (draftMessage.trim() && phase !== "sending" && latestTurn && !isReasoningActive) {
+                  if (draftMessage.trim() === "What should I do now?") {
+                    setShowPostReasoningReply(false);
+                  }
                   sendTurn();
                 }
               }
             }}
-            placeholder={latestPrompt || "Type what the patient or bystander says next..."}
+            placeholder={isReasoningActive ? "The agent is reasoning. Please wait..." : "Type your response"}
+            disabled={isReasoningActive}
           />
         </div>
-
-        {latestTurn?.quick_replies?.length > 0 && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-            {latestTurn.quick_replies.map((reply) => (
-              <button key={reply} className="btn btn-ghost btn-sm" onClick={() => setDraftMessage(reply)}>
-                {reply}
-              </button>
-            ))}
-          </div>
-        )}
 
         <button
           className="btn btn-green"
           style={{ width: "100%", justifyContent: "center" }}
-          onClick={sendTurn}
-          disabled={!draftMessage.trim() || phase === "sending" || !latestTurn}
+          onClick={() => {
+            if (draftMessage.trim() && !isReasoningActive) {
+              if (draftMessage.trim() === "What should I do now?") {
+                setShowPostReasoningReply(false);
+              }
+              sendTurn();
+            }
+          }}
+          disabled={!draftMessage.trim() || phase === "sending" || !latestTurn || isReasoningActive}
         >
-          {phase === "sending" ? "Sending..." : "Send"}
+          {isReasoningActive ? "Reasoning..." : phase === "sending" ? "Waiting for agent..." : "Send"}
         </button>
       </div>
     </div>

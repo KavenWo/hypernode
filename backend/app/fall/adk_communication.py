@@ -88,6 +88,7 @@ Return JSON with these fields:
 - reasoning_needed
 - reasoning_reason
 - should_surface_execution_update
+- execution_signal
 - guidance_intent
 - next_focus
 - immediate_step
@@ -166,6 +167,7 @@ def _deterministic_fallback_analysis(
             reasoning_needed=False,
             reasoning_reason="The controlled flow starts with the opening check.",
             should_surface_execution_update=False,
+            execution_signal="none",
             guidance_intent="question",
             next_focus="opening_check",
             immediate_step=None,
@@ -193,6 +195,7 @@ def _deterministic_fallback_analysis(
         reasoning_needed=False,
         reasoning_reason="Reasoning stays controller-gated in the fallback path.",
         should_surface_execution_update=False,
+        execution_signal="none",
         guidance_intent="question",
         next_focus=next_focus,
         immediate_step=None,
@@ -297,6 +300,27 @@ def _summarize_reasoning_handoff(assessment: FallAssessment | None) -> str:
     )
 
 
+def _summarize_active_guidance(assessment: FallAssessment | None, previous_analysis: CommunicationAgentAnalysis | None) -> str:
+    if assessment is None:
+        return "No active grounded guidance."
+    protocol = assessment.protocol_guidance
+    if protocol and protocol.ready_for_communication and protocol.steps:
+        current_hint = previous_analysis.immediate_step if previous_analysis and previous_analysis.immediate_step else protocol.steps[0]
+        return (
+            f"protocol={protocol.protocol_key or 'none'}; "
+            f"authoritative_step={current_hint}; "
+            f"available_steps={', '.join(protocol.steps[:4])}"
+        )
+    if assessment.guidance.steps:
+        current_hint = previous_analysis.immediate_step if previous_analysis and previous_analysis.immediate_step else assessment.guidance.steps[0]
+        return (
+            f"protocol=generic_guidance; "
+            f"authoritative_step={current_hint}; "
+            f"available_steps={', '.join(assessment.guidance.steps[:4])}"
+        )
+    return "No active grounded guidance."
+
+
 def _normalize_analysis_payload(payload: dict) -> dict:
     normalized = dict(payload)
 
@@ -371,6 +395,7 @@ def _normalize_analysis_payload(payload: dict) -> dict:
         "communication_target": "unknown",
         "conversation_state_summary": "",
         "reasoning_reason": "",
+        "execution_signal": "none",
         "guidance_intent": "question",
         "next_focus": "general_check",
     }
@@ -477,6 +502,7 @@ async def analyze_communication_turn_with_adk(
         previous_communication_summary=_summarize_previous_analysis(previous_analysis),
         acknowledged_reasoning_summary=_summarize_acknowledged_reasoning_triggers(acknowledged_reasoning_triggers),
         execution_state_summary=build_visible_execution_state_summary(execution_updates or []),
+        active_guidance_summary=_summarize_active_guidance(previous_assessment, previous_analysis),
     )
 
     try:

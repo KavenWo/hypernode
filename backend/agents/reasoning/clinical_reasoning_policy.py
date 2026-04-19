@@ -417,7 +417,9 @@ def _build_response_plan(
     if "severe_bleeding" in signals.red_flags:
         bystander_actions.append(ResponseActionItem(type="apply_pressure_to_bleeding", priority="immediate", reason="Visible severe bleeding needs immediate pressure if safe."))
 
-    if {"head_strike", "suspected_spinal_injury"} & set(signals.red_flags) or "head_strike_unconfirmed" in signals.missing_facts:
+    cpr_active = "not_breathing" in signals.red_flags
+
+    if ({"head_strike", "suspected_spinal_injury"} & set(signals.red_flags) or "head_strike_unconfirmed" in signals.missing_facts) and not cpr_active:
         bystander_actions.append(ResponseActionItem(type="keep_patient_still", priority="immediate", reason="Movement may worsen head, neck, or spinal injury."))
         bystander_actions.append(ResponseActionItem(type="do_not_move_patient", priority="immediate", reason="Avoid moving the patient unless there is immediate danger."))
 

@@ -1,32 +1,41 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "./components/layout/Sidebar";
 import Dashboard from "./components/pages/Dashboard";
 import ProfilePage from "./components/pages/ProfilePage";
 import HistoryPage from "./components/pages/HistoryPage";
 import WelcomeAuthModal from "./components/ui/WelcomeAuthModal.jsx";
 import { PAGES } from "./constants/pages";
-import { fetchSessionHistory, fetchSessionPatients, normalizePatientProfile, saveSessionPatient } from "./lib/patientApi.js";
+import { fetchSessionIncidents, fetchSessionPatients, normalizePatientProfile, saveSessionPatient } from "./lib/patientApi.js";
 import { resolveExistingAnonymousSession, bootstrapAnonymousSession } from "./lib/sessionBootstrap.js";
 
 import "./styles/index.css";
 
 export default function App() {
   const [page, setPage] = useState(PAGES.DASHBOARD);
-  const [historyLog, setHistoryLog] = useState([]);
+  const [incidentLog, setIncidentLog] = useState([]);
   const [authStatus, setAuthStatus] = useState("checking");
   const [authError, setAuthError] = useState("");
   const [authSession, setAuthSession] = useState(null);
   const [dataStatus, setDataStatus] = useState("idle"); // 'idle' | 'loading' | 'ready' | 'error'
+  const [isSyncing, setIsSyncing] = useState(false);
   const [patientProfiles, setPatientProfiles] = useState([]);
-  const [currentPatientId, setCurrentPatientId] = useState("");
+  const sessionRestoreStartedRef = useRef(false);
+  const currentPatientId = patientProfiles[0]?.patientId || "";
 
   const currentPatient = useMemo(
-    () => patientProfiles.find((patient) => patient.patientId === currentPatientId) || patientProfiles[0] || null,
-    [patientProfiles, currentPatientId],
+    () => patientProfiles[0] || null,
+    [patientProfiles],
   );
 
   useEffect(() => {
     let cancelled = false;
+
+    if (sessionRestoreStartedRef.current) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    sessionRestoreStartedRef.current = true;
 
     async function hydrateExistingSession() {
       try {
@@ -39,7 +48,6 @@ export default function App() {
           if (session.patients?.length) {
             const normalized = session.patients.map(normalizePatientProfile);
             setPatientProfiles(normalized);
-            setCurrentPatientId(session.patientId || normalized[0]?.patientId || "");
           }
           setAuthStatus("ready");
           setAuthError("");
@@ -66,6 +74,7 @@ export default function App() {
     setAuthStatus("signing_in");
     setAuthError("");
     setDataStatus("loading");
+    setIsSyncing(true);
     try {
       const session = await bootstrapAnonymousSession(null);
       // Fast-track the UI to ready state as soon as we have a session
@@ -75,12 +84,12 @@ export default function App() {
       if (session.patients?.length) {
         const normalized = session.patients.map(normalizePatientProfile);
         setPatientProfiles(normalized);
-        setCurrentPatientId(session.patientId || normalized[0]?.patientId || "");
         setDataStatus("ready");
       }
     } catch (error) {
       setAuthStatus("awaiting_user");
       setDataStatus("error");
+      setIsSyncing(false);
       setAuthError(error.message || "Unable to start the anonymous session.");
     }
   }
@@ -93,54 +102,30 @@ export default function App() {
     async function hydrateSessionData() {
       const sessionUid = authSession?.backendSession?.session_uid;
       if (!sessionUid) return;
-      
-      setDataStatus("loading");
-      
-      const maxAttempts = 10;
-      let attempt = 0;
-      
-      while (attempt < maxAttempts) {
-        if (!isMounted) break;
 
-        try {
-          const startTime = Date.now();
-          const [patients, history] = await Promise.all([
-            fetchSessionPatients(sessionUid),
-            fetchSessionHistory(sessionUid),
-          ]);
-          
-          if (!isMounted) break;
+      const hasImmediatePatients = patientProfiles.length > 0;
+      setDataStatus(hasImmediatePatients ? "ready" : "loading");
+      setIsSyncing(true);
 
-          if (patients.length > 0) {
-            setPatientProfiles(patients);
-            setHistoryLog(history);
-            if (patients[0]?.patientId) {
-              setCurrentPatientId(patients[0].patientId);
-            }
-            setDataStatus("ready");
-            return;
-          }
-          
-          attempt++;
-          const elapsed = Date.now() - startTime;
-          const waitTime = Math.max(500, 1500 - elapsed);
-          
-          if (attempt < maxAttempts && isMounted) {
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-          }
-        } catch (err) {
-          console.error("Hydration attempt failed:", err);
-          attempt++;
-          if (attempt >= maxAttempts) {
-            if (isMounted) setDataStatus("error");
-          } else if (isMounted) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          }
+      try {
+        const [patients, history] = await Promise.all([
+          fetchSessionPatients(sessionUid),
+          fetchSessionIncidents(sessionUid),
+        ]);
+
+        if (!isMounted) return;
+
+        if (patients.length > 0) {
+          setPatientProfiles(patients);
         }
-      }
-      
-      if (isMounted && attempt >= maxAttempts) {
-        setDataStatus("ready"); 
+        setIncidentLog(history);
+        setDataStatus("ready");
+        setIsSyncing(false);
+      } catch (err) {
+        console.error("Session hydration failed:", err);
+        if (!isMounted) return;
+        setIsSyncing(false);
+        setDataStatus(hasImmediatePatients ? "ready" : "error");
       }
     }
 
@@ -156,7 +141,7 @@ export default function App() {
       <div className="app">
         <Sidebar page={page} setPage={setPage} />
         <div className="main">
-          {dataStatus === "loading" && !showWelcomeModal && (
+          {isSyncing && !showWelcomeModal && (
             <div className="app-hydration-toast">
               <div className="toast-spinner"></div>
               <div className="toast-content">
@@ -165,41 +150,40 @@ export default function App() {
               </div>
             </div>
           )}
-          {page === PAGES.DASHBOARD && (
+          {/* Dashboard is persisted to maintain its state and running processes */}
+          <div style={{ display: page === PAGES.DASHBOARD ? "contents" : "none" }}>
             <Dashboard
+              isActive={page === PAGES.DASHBOARD}
               onNavigate={setPage}
-              historyLog={historyLog}
-              setHistoryLog={setHistoryLog}
+              incidentLog={incidentLog}
+              setIncidentLog={setIncidentLog}
               authSession={authSession}
               patientProfiles={patientProfiles}
               currentPatientId={currentPatientId}
-              onSelectPatient={setCurrentPatientId}
               dataStatus={dataStatus}
             />
-          )}
+          </div>
           {page === PAGES.PROFILE && (
             <ProfilePage
               patientProfiles={patientProfiles}
               currentPatientId={currentPatientId}
-              onSelectPatient={setCurrentPatientId}
               onSaveProfile={async (patient) => {
                 const sessionUid = authSession?.backendSession?.session_uid;
                 if (!sessionUid) {
                   throw new Error("Missing session uid.");
                 }
                 const saved = await saveSessionPatient(patient, sessionUid);
-                setPatientProfiles((current) =>
-                  current.map((item) => (item.patientId === saved.patientId ? saved : item)),
-                );
+                setPatientProfiles([saved]);
                 return saved;
               }}
             />
           )}
           {page === PAGES.HISTORY && (
             <HistoryPage
-              historyLog={historyLog}
-              setHistoryLog={setHistoryLog}
+              incidentLog={incidentLog}
+              setIncidentLog={setIncidentLog}
               patientProfiles={patientProfiles}
+              authSession={authSession}
             />
           )}
         </div>

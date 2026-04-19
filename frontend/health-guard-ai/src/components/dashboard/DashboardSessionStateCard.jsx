@@ -12,9 +12,11 @@ function formatSeverity(value) {
 }
 
 function toTitleCase(value) {
-  return (value || "unknown")
+  if (!value) return "Unknown";
+  const str = String(value);
+  return str
     .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : ""))
     .join(" ");
 }
 
@@ -22,7 +24,7 @@ function formatFlags(flags) {
   if (!Array.isArray(flags) || flags.length === 0) {
     return "None";
   }
-  return flags.map((flag) => toTitleCase(flag)).join(", ");
+  return flags.filter(Boolean).map((flag) => toTitleCase(flag)).join(", ");
 }
 
 function formatBooleanLabel(value, positiveLabel, negativeLabel = "Unknown") {
@@ -35,39 +37,12 @@ function formatBooleanLabel(value, positiveLabel, negativeLabel = "Unknown") {
   return "Unknown";
 }
 
-function buildFlowSteps(canonicalState) {
-  const orderedStates = [
-    ["awaiting_opening_response", "Are You Okay?"],
-    ["bystander_check", "Bystander Check"],
-    ["consciousness_check", "Consciousness Check"],
-    ["breathing_check", "Breathing Check"],
-    ["optional_flags_check", "Optional Flags"],
-    ["ready_for_reasoning", "Reasoning Ready"],
-    ["reasoning_in_progress", "Reasoning"],
-    ["awaiting_dispatch_confirmation", "Dispatch Confirmation"],
-    ["execution_in_progress", "Execution"],
-  ];
-
-  const currentIndex = orderedStates.findIndex(([state]) => state === canonicalState);
-  return orderedStates.map(([state, label], index) => ({
-    state,
-    label,
-    status:
-      currentIndex === -1
-        ? "upcoming"
-        : index < currentIndex
-          ? "completed"
-          : index === currentIndex
-            ? "current"
-            : "upcoming",
-  }));
-}
-
 export default function DashboardSessionStateCard({
   sessionId,
   streamStatus,
   latestTurn,
   latestAssessment,
+  latestVideoAnalysis,
   error,
   historyCount,
   phase,
@@ -75,10 +50,26 @@ export default function DashboardSessionStateCard({
   const canonicalState = latestTurn?.state;
   const canonicalCommunication = latestTurn?.canonical_communication_state;
   const canonicalExecution = latestTurn?.execution_state;
+  const executionPlan = latestTurn?.execution_analysis;
+  const grounding = latestAssessment?.protocol_guidance;
   const reasoningDecision = latestTurn?.reasoning_decision;
   const reasoningRuns = latestTurn?.reasoning_runs || [];
   const latestReasoningRun = reasoningRuns.at?.(-1) || null;
-  const flowSteps = buildFlowSteps(canonicalState);
+  const detection = latestAssessment?.detection;
+  const protocolGuidance = latestAssessment?.protocol_guidance;
+  const isSentinelAnalyzing = phase === "analyzing_video";
+  const sentinelDetection = detection || (latestVideoAnalysis
+    ? {
+        severity: latestVideoAnalysis?.severity || 'low',
+        motion_state: latestVideoAnalysis?.motion_state,
+        fall_detection_confidence_score: latestVideoAnalysis?.confidence_score,
+        event_validity: latestVideoAnalysis?.fall_detected ? "likely_true" : "unlikely_false",
+        video_id: latestVideoAnalysis?.video_id,
+        video_source: latestVideoAnalysis?.video_source,
+        video_summary: latestVideoAnalysis?.summary,
+        fall_detected: latestVideoAnalysis?.fall_detected
+      }
+    : null);
 
   // Communication Agent Logic
   const isCommRunning = phase === "sending" || phase === "starting";
@@ -86,33 +77,76 @@ export default function DashboardSessionStateCard({
   let commStatusText = latestTurn ? "Listening" : "Standby";
   if (isCommRunning) commStatusText = "Thinking";
   if (streamStatus === "connecting") commStatusText = "Connecting";
-  
+
   // Bystander Agent Logic
   const bystanderAvailable = canonicalCommunication?.bystander_present ?? latestTurn?.interaction?.bystander_available;
   const bystanderCanHelp = latestTurn?.interaction?.bystander_can_help;
-  const guidanceSteps = latestTurn?.guidance_steps || [];
+  const protocolSteps = protocolGuidance?.steps || [];
+  const guidanceSteps = protocolSteps.length > 0 ? protocolSteps : (latestTurn?.guidance_steps || []);
   const currentGuidanceStepIndex = canonicalExecution?.guidance_step_index ?? 0;
   const currentGuidanceStep =
     guidanceSteps.length > 0
       ? guidanceSteps[Math.min(currentGuidanceStepIndex, guidanceSteps.length - 1)]
       : "";
+  const protocolKey = protocolGuidance?.protocol_key || canonicalExecution?.guidance_protocol || "";
+  const protocolTitle = protocolGuidance?.title || (protocolKey ? toTitleCase(protocolKey) : "");
+  const groundingStatus = protocolGuidance?.grounding_status || "not_needed";
+  const protocolReady = Boolean(protocolGuidance?.ready_for_communication && guidanceSteps.length > 0);
+  const groundingRequired = Boolean(protocolGuidance?.grounding_required || protocolKey);
+  const bystanderGroundingActive = Boolean(bystanderAvailable && bystanderCanHelp && groundingRequired);
   let bystanderStatus = "idle";
   let bystanderStatusText = "Standby";
-  
-  if (bystanderAvailable) {
+
+  if (!latestTurn) {
+    bystanderStatus = "idle";
+    bystanderStatusText = "Standby";
+  } else if (groundingStatus === "pending") {
+    bystanderStatus = "pending";
+    bystanderStatusText = "Grounding";
+  } else if (protocolReady) {
+    bystanderStatus = "success";
+    bystanderStatusText = "Grounded";
+  } else if (bystanderGroundingActive) {
     bystanderStatus = "active";
-    bystanderStatusText = "Engaged";
-  } else if (bystanderAvailable === false) {
+    bystanderStatusText = "Searching";
+  } else if (bystanderAvailable && bystanderCanHelp) {
+    bystanderStatus = "active";
+    bystanderStatusText = "Ready";
+  } else if (bystanderAvailable) {
+    bystanderStatus = "idle";
+    bystanderStatusText = "Bystander";
+  } else {
     bystanderStatus = "idle";
     bystanderStatusText = "No Bystander";
   }
+
+
+  const groundingActive = Boolean(groundingRequired && groundingStatus !== "not_needed");
+
+  let bystanderActivity = "Standing by for protocol-specific medical guidance triggers.";
+  if (!latestTurn) {
+    bystanderActivity = "Standing by for grounded first-aid protocol triggers.";
+  } else if (groundingStatus === "pending") {
+    bystanderActivity = protocolTitle
+      ? `Retrieving grounded ${protocolTitle} instructions from Vertex AI Search medical handbooks.`
+      : "Retrieving grounded medical instructions from Vertex AI Search.";
+  } else if (protocolReady) {
+    bystanderActivity = protocolTitle
+      ? `Grounded ${protocolTitle} instructions successfully retrieved and ready for use.`
+      : "Grounded medical instructions successfully retrieved and ready for use.";
+  } else if (groundingRequired) {
+    bystanderActivity = `Medical protocol identified (${protocolKey}). Preparing retrieval intents...`;
+  } else if (bystanderAvailable) {
+    bystanderActivity = "A bystander is present. Awaiting clinical reasoning to trigger protocol grounding.";
+  }
+
 
   // Reasoning Agent Logic
   const reasoningState = latestTurn?.reasoning_status;
   let reasoningStatus = "idle";
   let reasoningStatusText = "Standby";
   let reasoningPulsing = false;
-  
+
   if (reasoningState === "pending") {
     reasoningStatus = "pending";
     reasoningStatusText = "Analyzing";
@@ -121,23 +155,25 @@ export default function DashboardSessionStateCard({
     reasoningStatus = "success";
     reasoningStatusText = "Completed";
   } else if (reasoningState === "failed") {
-    reasoningStatus = "pending"; 
+    reasoningStatus = "pending";
     reasoningStatusText = "Failed";
   }
 
   // Execution Agent Logic
   const executionUpdates = latestTurn?.execution_updates || [];
   const actionStates = latestTurn?.action_states || [];
-  
+
   let executionStatus = "idle";
   let executionStatusText = "Standby";
-  let executionActivity = latestTurn 
-    ? "Awaiting actionable triggers from the reasoning engine." 
+  let isExecutionPulsing = false;
+  let executionActivity = latestTurn
+    ? "Awaiting actionable triggers from the reasoning engine."
     : "Standing by for emergency action triggers.";
-  
+
   if (canonicalExecution?.dispatch_status === "pending_confirmation") {
     executionStatus = "pending";
     executionStatusText = "Countdown";
+    isExecutionPulsing = true;
     executionActivity = "Dispatch confirmation window is active before emergency services are contacted automatically.";
   } else if (
     canonicalExecution?.dispatch_status === "confirmed" ||
@@ -149,7 +185,7 @@ export default function DashboardSessionStateCard({
   } else if (executionUpdates.length > 0 || actionStates.length > 0) {
     const hasPending = executionUpdates.some(u => ["pending_confirmation", "queued"].includes(u.status));
     const hasActive = executionUpdates.some(u => u.status === "active");
-    
+
     if (hasActive || hasPending) {
       executionStatus = "active";
       executionStatusText = "Running";
@@ -170,11 +206,19 @@ export default function DashboardSessionStateCard({
   }
 
   // Sentinel Agent Logic
-  const sentinelStatus = "idle";
-  const sentinelStatusText = "Unavailable";
+  const sentinelStatus = isSentinelAnalyzing ? "pending" : sentinelDetection ? (latestVideoAnalysis?.fall_detected || detection ? "success" : "idle") : "idle";
+  const sentinelStatusText = isSentinelAnalyzing
+    ? "Analyzing"
+    : latestVideoAnalysis
+      ? (latestVideoAnalysis.fall_detected ? "Fall Detected" : "No Fall")
+      : sentinelDetection?.video_id
+        ? "Video Analyzed"
+        : sentinelDetection
+          ? "Detected"
+          : "Standby";
 
   return (
-    <div className="card" style={{ padding: "18px 20px" }}>
+    <div className="card" style={{ padding: "14px 16px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <div className="card-title" style={{ marginBottom: 0 }}>Agentic Workflow Monitor</div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -190,247 +234,261 @@ export default function DashboardSessionStateCard({
         </div>
       )}
 
-      <div style={{ marginBottom: 18, padding: 14, borderRadius: 14, border: "1px solid var(--border)", background: "var(--surface)" }}>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
-          Final Flow Tracker
+      {/* Sentinel Agent */}
+      <div className="agent-card">
+        <div className="agent-header" style={{ alignItems: "flex-start" }}>
+          <div className="agent-title-group">
+            <div className={`agent-icon-box ${sentinelStatus} ${isSentinelAnalyzing ? 'pulsing' : ''}`} style={{ marginTop: 2 }}>
+              <Shield size={14} />
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700 }}>Sentinel Agent</div>
+                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                  Gemini 2.5 Flash
+                </span>
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
+                Used to detect whether a fall has occurred.
+              </div>
+            </div>
+          </div>
+
+          <div className={`agent-status-tag ${sentinelStatus}`}>
+            {sentinelStatusText}
+          </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
-          {flowSteps.map((step) => (
+
+        <div style={{ padding: "0 2px" }}>
+          {isSentinelAnalyzing && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, color: "var(--amber)", fontSize: 13 }}>
+              <div className="typing-dots"><span></span><span></span><span></span></div>
+              Analyzing video frames for visible fall events...
+            </div>
+          )}
+
+          {(sentinelDetection?.video_summary || latestVideoAnalysis?.summary) && (
             <div
-              key={step.state}
               style={{
-                padding: "10px 12px",
-                borderRadius: 10,
+                marginTop: 14,
+                padding: "12px 14px",
+                borderRadius: 12,
+                background: "var(--surface2)",
                 border: "1px solid var(--border)",
-                background:
-                  step.status === "current"
-                    ? "var(--amber-subtle)"
-                    : step.status === "completed"
-                      ? "var(--green-subtle)"
-                      : "var(--surface2)",
-                color:
-                  step.status === "current"
-                    ? "var(--amber)"
-                    : step.status === "completed"
-                      ? "var(--green-dim)"
-                      : "var(--text-sub)",
+                fontSize: 10,
+                color: "var(--text-sub)",
+                lineHeight: 1.6,
               }}
             >
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
-                {step.status}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+                  Vision Summary
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {sentinelDetection?.fall_detection_confidence_score != null && (
+                    <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.6, textTransform: "uppercase", background: "var(--surface3)", padding: "2px 6px", borderRadius: 4 }}>
+                      Conf: {formatScore(sentinelDetection.fall_detection_confidence_score)}
+                    </span>
+                  )}
+                </div>
+
               </div>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{step.label}</div>
+              <div style={{ color: "var(--text)", fontWeight: 500 }}>
+                {latestVideoAnalysis?.summary || sentinelDetection?.video_summary}
+              </div>
             </div>
-          ))}
+          )}
+
         </div>
       </div>
 
+
       {/* Communication Agent */}
       <div className={`agent-card ${isCommRunning ? 'reasoning-pulse-border' : ''}`}>
-        <div className="agent-header">
+        <div className="agent-header" style={{ alignItems: "flex-start" }}>
           <div className="agent-title-group">
-            <div className={`agent-icon-box ${commStatus} ${isCommRunning ? 'pulsing' : ''}`}>
-              <MessageSquare size={16} />
+            <div className={`agent-icon-box ${commStatus} ${isCommRunning ? 'pulsing' : ''}`} style={{ marginTop: 2 }}>
+              <MessageSquare size={14} />
             </div>
-            <span>Communication Agent</span>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700 }}>Communication Agent</div>
+                <span style={{ fontSize: 9, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                  Gemini 2.5 Flash
+                </span>
+              </div>
+
+              <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
+                Used to facilitate dialogue, interpret intent, and guide the emergency conversation flow.
+              </div>
+            </div>
           </div>
+
           <div className={`agent-status-tag ${commStatus}`}>
             {commStatusText}
           </div>
         </div>
-          <div className="agent-detail">
-          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Interaction Analysis:</div>
-          <div style={{ marginBottom: 10 }}>
-            {latestTurn?.canonical_communication_state?.latest_prompt
-              ? `Using AI to interpret the responder, update the canonical state, and drive the next allowed question. Latest prompt: "${latestTurn.canonical_communication_state.latest_prompt}"`
-              : "Using AI to interpret intent, responder role, and which canonical question should come next."}
-          </div>
-          
-          <div className="agent-meta-row">
-            {latestTurn ? (
-              <>
-                <span className="tag">Patient Status - {toTitleCase(latestTurn.interaction?.patient_response_status)}</span>
-                <span className="tag">Canonical - {toTitleCase(canonicalState)}</span>
-                <span className="tag">Mode - {toTitleCase(canonicalCommunication?.mode)}</span>
-                <span className="tag">Responder - {toTitleCase(canonicalCommunication?.responder_role)}</span>
-                <span className="tag">Flags - {formatFlags(canonicalCommunication?.flags)}</span>
-                <span className="tag">Patient Replied - {canonicalCommunication?.patient_responded ? "Yes" : "No"}</span>
-                {latestTurn.interaction?.new_fact_keys && latestTurn.interaction.new_fact_keys.length > 0 && (
-                   <span className="tag tag-green">New Facts Logged</span>
-                )}
-              </>
-            ) : (
-                <span className="tag">Awaiting Dialogue</span>
-            )}
-          </div>
+
+        <div style={{ padding: "0 2px" }}>
+          {isCommRunning && (
+            <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 10, padding: "2px 4px" }}>
+              <div className="typing-dots amber"><span></span><span></span><span></span></div>
+              <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 500, letterSpacing: "0.01em" }}>
+                Interpreting dialogue & drafting response...
+              </div>
+            </div>
+          )}
+
+
+          {latestTurn?.canonical_communication_state?.latest_prompt && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "12px 14px",
+                borderRadius: 12,
+                background: "var(--surface2)",
+                border: "1px solid var(--border)",
+                fontSize: 10,
+                color: "var(--text-sub)",
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, color: "var(--text-muted)" }}>
+                Active Dialogue Context
+              </div>
+              <div style={{ color: "var(--text)", fontWeight: 500 }}>
+                {latestTurn.canonical_communication_state.latest_prompt}
+              </div>
+            </div>
+          )}
+
           {latestTurn?.communication_analysis?.ai_server_error && (
-            <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: 6, fontSize: 13, lineHeight: 1.5 }}>
-              <strong style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.5px" }}>AI Server Fallback</strong>
+            <div style={{ marginTop: 12, padding: "8px 12px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: 6, fontSize: 10, lineHeight: 1.5 }}>
+              <strong style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.5px" }}>AI Server Fallback</strong>
               <div style={{ marginTop: 2, opacity: 0.9 }}>{latestTurn.communication_analysis.ai_server_error}</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Bystander Agent */}
-      <div className="agent-card">
-        <div className="agent-header">
-          <div className="agent-title-group">
-            <div className={`agent-icon-box ${bystanderStatus}`}>
-              <Users size={16} />
-            </div>
-            <span>Bystander Agent</span>
-          </div>
-          <div className={`agent-status-tag ${bystanderStatus}`}>
-            {bystanderStatusText}
-          </div>
-        </div>
-        <div className="agent-detail">
-          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Scene Evaluation:</div>
-          <div style={{ marginBottom: guidanceSteps.length > 0 ? 10 : 0 }}>
-            {!latestTurn ? "Standing by to evaluate scene dynamics." :
-              (bystanderAvailable ? 
-                (bystanderCanHelp ? "Bystander confirmed and capable of providing assistance." : "Bystander present but unable to help.") : 
-                "No capable bystander identified at the scene.")}
-          </div>
-
-          {latestTurn && (
-            <div className="agent-meta-row" style={{ marginBottom: guidanceSteps.length > 0 ? 10 : 0 }}>
-              <span className="tag">Bystander - {formatBooleanLabel(bystanderAvailable, "Present", "Absent")}</span>
-              <span className="tag">Help Capacity - {formatBooleanLabel(bystanderCanHelp, "Can Help", "Cannot Help")}</span>
-              <span className="tag">Conscious - {formatBooleanLabel(canonicalCommunication?.conscious, "Yes", "No")}</span>
-              <span className="tag">Breathing - {formatBooleanLabel(canonicalCommunication?.breathing_normal, "Normal", "Abnormal")}</span>
-            </div>
-          )}
-          
-          {guidanceSteps.length > 0 && (
-            <div style={{ marginTop: 10, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "6px", padding: "12px" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.5px" }}>
-                Active Guidance Track
-              </div>
-              <ul style={{ paddingLeft: 18, margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--text-sub)" }}>
-                {guidanceSteps.map((step, idx) => (
-                  <li
-                    key={idx}
-                    style={{
-                      marginBottom: 4,
-                      color:
-                        canonicalExecution?.phase === "guidance" && idx === currentGuidanceStepIndex
-                          ? "var(--amber)"
-                          : "var(--text-sub)",
-                      fontWeight:
-                        canonicalExecution?.phase === "guidance" && idx === currentGuidanceStepIndex ? 700 : 400,
-                    }}
-                  >
-                    {step}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      </div>
 
       {/* Reasoning Agent */}
       <div className={`agent-card ${reasoningPulsing ? 'reasoning-pulse-border' : ''}`}>
-        <div className="agent-header">
+        <div className="agent-header" style={{ alignItems: "flex-start" }}>
           <div className="agent-title-group">
-            <div className={`agent-icon-box ${reasoningStatus} ${reasoningPulsing ? 'pulsing' : ''}`}>
-              <BrainCircuit size={16} />
+            <div className={`agent-icon-box ${reasoningStatus} ${reasoningPulsing ? 'pulsing' : ''}`} style={{ marginTop: 2 }}>
+              <BrainCircuit size={14} />
             </div>
-            <span>Reasoning Agent</span>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700 }}>Reasoning Agent</div>
+                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                  Gemini 2.5 Pro
+                </span>
+              </div>
+
+              <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
+                Evaluates clinical severity, vitals, and situational context to determine interventions.
+              </div>
+            </div>
           </div>
+
           <div className={`agent-status-tag ${reasoningStatus}`}>
             {reasoningStatusText}
           </div>
         </div>
-        
-        <div className="agent-detail">
-          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Clinical Justification:</div>
-          <div style={{ marginBottom: 12 }}>
-            {!latestTurn ? "Standing by to monitor vitals and evaluate clinical severity." :
-              (latestTurn.reasoning_status === "pending" ? (
-                 <>
-                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, color: "var(--amber)" }}>
-                     <div className="typing-dots"><span></span><span></span><span></span></div>
-                     Evaluating latest vitals and context...
-                   </div>
-                   {latestAssessment?.clinical_assessment?.reasoning_summary && (
-                     <div style={{ opacity: 0.65, borderLeft: "2px solid var(--border)", paddingLeft: 8, fontSize: 13 }}>
-                       <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", marginBottom: 2 }}>Previous Run:</div>
-                       {latestAssessment.clinical_assessment.reasoning_summary}
-                     </div>
-                   )}
-                 </>
-              ) : (
-                 reasoningDecision?.reason ||
-                 latestAssessment?.clinical_assessment?.reasoning_summary ||
-                 "Awaiting significant changes in state or vital signs to run full reasoning refresh."
-              ))
-            }
-            
-            {/* Show why it triggered if running/completed just now */}
-            {latestTurn?.reasoning_reason && latestTurn.reasoning_status === "pending" && (
-              <div style={{ marginTop: 6, fontSize: 12, fontStyle: "italic", opacity: 0.8 }}>
-                Trigger: {latestTurn.reasoning_reason}
+
+        <div style={{ padding: "0 2px" }}>
+          {reasoningStatus === "pending" && (
+            <div style={{ marginTop: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 4px", marginBottom: 8 }}>
+                <div className="typing-dots amber"><span></span><span></span><span></span></div>
+                <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 500, letterSpacing: "0.01em" }}>
+                  Synthesizing clinical assessment...
+                </div>
               </div>
-            )}
-          </div>
-          
-          {latestAssessment && (
-            <div className="agent-meta-row" style={{ marginTop: 12 }}>
-              <span className={`tag ${latestAssessment.clinical_assessment?.severity === "critical" ? "tag-red" : ""}`}>
-                Severity - {formatSeverity(latestAssessment.clinical_assessment?.severity)}
-              </span>
-              <span className="tag">Confidence - {formatScore(latestAssessment.clinical_assessment?.clinical_confidence_score)}</span>
-              {reasoningDecision?.scenario && (
-                <span className="tag">Scenario - {reasoningDecision.scenario}</span>
-              )}
-              {reasoningDecision?.action && (
-                <span className="tag">Action - {toTitleCase(reasoningDecision.action)}</span>
-              )}
-              {latestTurn.reasoning_run_count > 0 && (
-                <span className="tag">Runs: {latestTurn.reasoning_run_count}</span>
-              )}
-              {latestTurn?.interaction?.reasoning_refresh?.required && (
-                <span className="tag tag-orange">Rerun Queued</span>
+              {latestAssessment?.clinical_assessment?.red_flags?.length > 0 && (
+                <div style={{ fontSize: 9, color: "var(--text-muted)", fontStyle: "italic", borderLeft: "2px solid var(--border)", paddingLeft: 10, marginLeft: 4 }}>
+                  Detected: {latestAssessment.clinical_assessment.red_flags.slice(0, 3).join(", ")}
+                  {latestAssessment.clinical_assessment.red_flags.length > 3 ? "..." : ""}
+                </div>
               )}
             </div>
           )}
+
 
           {reasoningDecision && (
             <div
               style={{
-                marginTop: 12,
-                padding: "10px 12px",
-                borderRadius: 10,
-                background: "var(--surface)",
+                marginTop: 14,
+                padding: "12px 14px",
+                borderRadius: 12,
+                background: "var(--surface2)",
                 border: "1px solid var(--border)",
-                fontSize: 13,
+                fontSize: 10,
                 color: "var(--text-sub)",
                 lineHeight: 1.6,
               }}
             >
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, color: "var(--text-muted)" }}>
-                Final Decision
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+                  Final Decision
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <span style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: latestAssessment?.clinical_assessment?.severity === "critical" ? "var(--red-subtle)" : "var(--surface3)",
+                    color: latestAssessment?.clinical_assessment?.severity === "critical" ? "var(--red)" : "var(--text-muted)",
+                    border: latestAssessment?.clinical_assessment?.severity === "critical" ? "1px solid rgba(239, 68, 68, 0.2)" : "1px solid transparent"
+                  }}>
+                    {formatSeverity(latestAssessment?.clinical_assessment?.severity)}
+                  </span>
+                  <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.8, textTransform: "uppercase", background: "var(--surface3)", padding: "2px 6px", borderRadius: 4 }}>
+                    Conf: {formatScore(latestAssessment?.clinical_assessment?.clinical_confidence_score)}
+                  </span>
+                </div>
+
               </div>
-              <div>{reasoningDecision.instructions || reasoningDecision.reason}</div>
-              {reasoningDecision.flags_used?.length > 0 && (
-                <div style={{ marginTop: 6, color: "var(--text-muted)" }}>
-                  Flags used: {formatFlags(reasoningDecision.flags_used)}
-                </div>
-              )}
-              {latestReasoningRun?.trigger && (
-                <div style={{ marginTop: 6, color: "var(--text-muted)" }}>
-                  Latest trigger: {latestReasoningRun.trigger}
-                </div>
-              )}
+
+              <div style={{ color: "var(--text)", fontWeight: 500 }}>
+                {(() => {
+                  const plan = latestAssessment?.clinical_assessment?.response_plan;
+                  const primary = reasoningDecision?.action ? toTitleCase(reasoningDecision.action).replace('Emergency Dispatch', 'Call Ambulance') : null;
+                  const notifications = plan?.notification_actions?.some(a => a?.type === 'inform_family') ? "Inform Family" : null;
+                  const mainDecision = [primary, notifications].filter(Boolean).join(" • ");
+                  const instruction = reasoningDecision?.instructions || reasoningDecision?.reason;
+
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {mainDecision && (
+                        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.2px", color: "var(--text)" }}>
+                          {mainDecision}
+                        </div>
+                      )}
+                      {instruction && (
+                        <div style={{ fontSize: 10, color: "var(--text)", lineHeight: 1.5 }}>
+                          {instruction}
+                        </div>
+                      )}
+
+                    </div>
+                  );
+                })()}
+              </div>
+
+
+
+
             </div>
           )}
 
           {(latestTurn?.reasoning_error || latestAssessment?.clinical_assessment?.ai_server_error) && (
-            <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: 6, fontSize: 13, lineHeight: 1.5 }}>
-              <strong style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.5px" }}>AI Server Fallback</strong>
+            <div style={{ marginTop: 12, padding: "8px 12px", background: "var(--red-subtle)", color: "var(--red)", border: "1px solid var(--red-glow)", borderRadius: 6, fontSize: 10, lineHeight: 1.5 }}>
+              <strong style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.5px" }}>AI Server Fallback</strong>
               <div style={{ marginTop: 2, opacity: 0.9 }}>
                 {latestTurn?.reasoning_error || latestAssessment?.clinical_assessment?.ai_server_error}
               </div>
@@ -439,97 +497,173 @@ export default function DashboardSessionStateCard({
         </div>
       </div>
 
+
       {/* Execution Agent */}
       <div className="agent-card">
         <div className="agent-header">
           <div className="agent-title-group">
-            <div className={`agent-icon-box ${executionStatus}`}>
-              <Zap size={16} />
+            <div className={`agent-icon-box ${executionStatus}`} style={{ marginTop: 2 }}>
+              <Zap size={14} />
             </div>
-            <span>Execution Agent</span>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700 }}>Execution Agent</div>
+                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                  Gemini 2.5 Flash
+                </span>
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
+                Generates clinical instructions and manages automated response triggers.
+              </div>
+            </div>
           </div>
           <div className={`agent-status-tag ${executionStatus}`}>
             {executionStatusText}
           </div>
         </div>
-        <div className="agent-detail">
-          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Action Dispatcher:</div>
-          <div style={{ marginBottom: executionUpdates.length > 0 ? 10 : 0 }}>{executionActivity}</div>
 
-          {canonicalExecution && (
-            <div className="agent-meta-row" style={{ marginTop: 6, gap: 6 }}>
-              <span className="tag">Phase - {toTitleCase(canonicalExecution.phase)}</span>
-              <span className="tag">Dispatch - {toTitleCase(canonicalExecution.dispatch_status)}</span>
-              {canonicalExecution.countdown_seconds != null && (
-                <span className="tag tag-red">T-{canonicalExecution.countdown_seconds}s</span>
-              )}
-              {canonicalExecution.guidance_protocol && (
-                <span className="tag">Protocol - {canonicalExecution.guidance_protocol}</span>
-              )}
-              {guidanceSteps.length > 0 && (
-                <span className="tag">
-                  Step - {Math.min(currentGuidanceStepIndex + 1, guidanceSteps.length)}/{guidanceSteps.length}
-                </span>
-              )}
-              {canonicalExecution.family_notified_initial && (
-                <span className="tag tag-green">Family Alerted</span>
-              )}
-              {canonicalExecution.family_notified_update && (
-                <span className="tag tag-green">Family Updated</span>
-              )}
-            </div>
-          )}
-          
-          {executionUpdates.length > 0 && (
-            <div className="agent-meta-row" style={{ marginTop: 6, gap: 6 }}>
-              {executionUpdates.map((update, idx) => (
-                <span key={idx} className={`tag ${update.status === "completed" ? "tag-green" : update.status === "active" ? "tag-blue" : ""}`}>
-                  {toTitleCase(update.type)}
-                </span>
-              ))}
-            </div>
-          )}
-
-          {currentGuidanceStep && canonicalExecution?.phase === "guidance" && (
+        <div className="agent-content">
+          {(canonicalExecution || executionPlan) && (
             <div
               style={{
-                marginTop: 12,
-                padding: "10px 12px",
-                borderRadius: 10,
-                background: "var(--surface)",
+                marginTop: 14,
+                padding: "12px 14px",
+                borderRadius: 12,
+                background: "var(--surface2)",
                 border: "1px solid var(--border)",
-                fontSize: 13,
+                fontSize: 10,
                 color: "var(--text-sub)",
                 lineHeight: 1.6,
               }}
             >
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, color: "var(--text-muted)" }}>
-                Current Execution Step
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+                  Execution Plan
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, opacity: 0.6, textTransform: "uppercase", background: "var(--surface3)", padding: "2px 6px", borderRadius: 4 }}>
+                    {canonicalExecution?.phase || executionPlan?.scenario || "Stable"}
+                  </span>
+                  {canonicalExecution?.dispatch_status && (
+                    <span className="tag" style={{ border: "none", background: "var(--surface3)", opacity: 0.8, padding: "2px 6px", fontSize: 9 }}>
+                      {toTitleCase(canonicalExecution.dispatch_status)}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div>{currentGuidanceStep}</div>
+
+              <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: 10, fontSize: 10 }}>
+                {executionPlan?.primary_message || executionActivity}
+              </div>
+
+              {guidanceSteps.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                  {guidanceSteps.map((step, idx) => (
+                    <div key={idx} style={{
+                      fontSize: 10,
+                      display: "flex",
+                      gap: 8,
+                      color: idx === currentGuidanceStepIndex ? "var(--text)" : "var(--text-muted)",
+                      fontWeight: idx === currentGuidanceStepIndex ? 600 : 400
+                    }}>
+                      <span style={{ opacity: 0.5, width: 14 }}>{idx + 1}.</span>
+                      <span>{step}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Sentinel Agent */}
-      <div className="agent-card" style={{ opacity: 0.6 }}>
+
+      {/* Bystander Agent (Retrieval Engine) */}
+      <div className="agent-card">
         <div className="agent-header">
           <div className="agent-title-group">
-            <div className={`agent-icon-box ${sentinelStatus}`}>
-              <Shield size={16} />
+            <div className={`agent-icon-box ${bystanderStatus} ${groundingStatus === "pending" ? "pulsing" : ""}`} style={{ marginTop: 2 }}>
+              <Users size={14} />
             </div>
-            <span>Sentinel Agent</span>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700 }}>Bystander Agent</div>
+                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                  Vertex AI Search
+                </span>
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
+                Retrieves grounded clinical protocols from validated medical handbooks.
+              </div>
+            </div>
           </div>
-          <div className={`agent-status-tag ${sentinelStatus}`}>
-            {sentinelStatusText}
+          <div className={`agent-status-tag ${bystanderStatus}`}>
+            {bystanderStatusText}
           </div>
         </div>
-        <div className="agent-detail">
-          <div style={{ marginBottom: 4, fontWeight: 600, color: "var(--text)" }}>Safety Guardrails:</div>
-          <div>Agent is currently deactivated. Safety protocols are intrinsically handled by the base reasoning pipeline.</div>
+
+        <div className="agent-content">
+          {(latestTurn || grounding) && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "12px 14px",
+                borderRadius: 12,
+                background: "var(--surface2)",
+                border: "1px solid var(--border)",
+                fontSize: 10,
+                color: "var(--text-sub)",
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
+                  Grounded Intelligence
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  {protocolReady && (
+                    <span style={{ fontSize: 9, fontWeight: 700, color: "var(--green)", textTransform: "uppercase", background: "var(--green-subtle)", padding: "2px 6px", borderRadius: 4 }}>
+                      Verified Source
+                    </span>
+                  )}
+                  {groundingRequired && (
+                    <span style={{
+                      fontSize: 9,
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                      background: protocolReady ? "var(--green-subtle)" : "var(--surface3)",
+                      color: protocolReady ? "var(--green)" : "var(--text-muted)"
+                    }}>
+                      {toTitleCase(groundingStatus.replace('_', ' '))}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: 10 }}>
+                {bystanderActivity}
+              </div>
+
+
+              {grounding?.queries?.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                  <div style={{ fontSize: 9, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Active Search Queries:
+                  </div>
+                  {grounding.queries.slice(0, 2).map((q, i) => (
+                    <div key={i} style={{ fontSize: 11, color: "var(--text-sub)", fontStyle: "italic", borderLeft: "2px solid var(--border)", paddingLeft: 8 }}>
+                      "{q}"
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
 
     </div>
   );

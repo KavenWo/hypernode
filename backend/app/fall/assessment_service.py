@@ -884,6 +884,9 @@ async def run_reasoning_assessment(
             fall_detection_confidence_score=event.confidence_score,
             fall_detection_confidence_band=_confidence_band(event.confidence_score),
             event_validity=_event_validity(event, vision_assessment),
+            video_id=event.video_id,
+            video_source=event.video_source,
+            video_summary=event.video_summary,
         ),
         clinical_assessment=clinical_assessment_summary,
         action=ActionSummary(

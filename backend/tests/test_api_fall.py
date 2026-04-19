@@ -10,6 +10,16 @@ from app.main import app
 def test_api_fall_flow() -> None:
     client = TestClient(app)
 
+    demo_videos_response = client.get("/api/v1/events/fall/demo-videos")
+    demo_videos_response.raise_for_status()
+    demo_videos_payload = demo_videos_response.json()
+    assert demo_videos_payload["videos"], demo_videos_payload
+    assert any(video["id"] == "falling_down" for video in demo_videos_payload["videos"]), demo_videos_payload
+
+    demo_video_file_response = client.get("/api/v1/events/fall/demo-videos/falling_down/file")
+    demo_video_file_response.raise_for_status()
+    assert demo_video_file_response.headers["content-type"].startswith("video/mp4"), demo_video_file_response.headers
+
     questions_response = client.post(
         "/api/v1/events/fall/questions",
         json={
@@ -105,6 +115,9 @@ def test_api_fall_flow() -> None:
                 "timestamp": "2024-04-10T12:00:00Z",
                 "motion_state": "rapid_descent",
                 "confidence_score": 0.98,
+                "video_id": "falling_down",
+                "video_source": "local_demo_video",
+                "video_summary": "Person fell and is motionless",
             },
             "interaction": {
                 "patient_response_status": "confused",

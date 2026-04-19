@@ -4,8 +4,9 @@ from fastapi import APIRouter, Query
 
 from app.services.patient_incident_service import (
     ExecuteActionRequest,
-    HistoryEntry,
+    IncidentSummary,
     Incident,
+    IncidentContextUpdate,
     IncidentStatusUpdate,
     PatientProfile,
     PatientProfileUpdate,
@@ -16,11 +17,12 @@ from app.services.patient_incident_service import (
     create_incident,
     execute_incident_action_once,
     get_incident_record,
-    list_history_entries,
+    list_incident_summaries,
     list_patient_profiles,
     load_patient_profile,
     send_sms_message,
     submit_incident_answers,
+    update_incident_context,
     update_incident_status,
     update_patient_profile,
 )
@@ -29,7 +31,7 @@ router = APIRouter(prefix="/api/v1", tags=["Frontend API"])
 
 
 @router.get("/patients/{patient_id}/profile", response_model=PatientProfile)
-async def get_current_profile(
+def get_current_profile(
     patient_id: str,
     session_uid: str | None = Query(default=None),
 ) -> PatientProfile:
@@ -37,14 +39,14 @@ async def get_current_profile(
 
 
 @router.get("/patients", response_model=list[PatientProfile])
-async def get_session_patients(
+def get_session_patients(
     session_uid: str = Query(...),
 ) -> list[PatientProfile]:
     return list_patient_profiles(session_uid)
 
 
 @router.patch("/patients/{patient_id}/profile", response_model=PatientProfile)
-async def update_current_profile(
+def update_current_profile(
     patient_id: str,
     request: PatientProfileUpdate,
 ) -> PatientProfile:
@@ -52,22 +54,37 @@ async def update_current_profile(
 
 
 @router.post("/incidents", response_model=Incident)
-async def start_incident(request: StartIncidentRequest) -> Incident:
+def start_incident(request: StartIncidentRequest) -> Incident:
     return create_incident(request)
 
 
+@router.get("/incidents/summary", response_model=list[IncidentSummary])
+def fetch_incident_summaries(
+    session_uid: str | None = Query(default=None),
+    patient_id: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> list[IncidentSummary]:
+    return list_incident_summaries(session_uid=session_uid, patient_id=patient_id, limit=limit)
+
+
 @router.get("/incidents/{incident_id}", response_model=Incident)
-async def get_lifecycle_incident(incident_id: str) -> Incident:
-    return get_incident_record(incident_id)
+def get_lifecycle_incident(
+    incident_id: str,
+    session_uid: str | None = Query(default=None),
+) -> Incident:
+    return get_incident_record(incident_id, session_uid)
 
 
 @router.get("/incidents/{incident_id}/result", response_model=Incident)
-async def get_incident_result(incident_id: str) -> Incident:
-    return get_incident_record(incident_id)
+def get_incident_result(
+    incident_id: str,
+    session_uid: str | None = Query(default=None),
+) -> Incident:
+    return get_incident_record(incident_id, session_uid)
 
 
 @router.patch("/incidents/{incident_id}/status", response_model=Incident)
-async def update_lifecycle_status(
+def update_lifecycle_status(
     incident_id: str,
     request: IncidentStatusUpdate,
 ) -> Incident:
@@ -75,7 +92,7 @@ async def update_lifecycle_status(
 
 
 @router.post("/incidents/{incident_id}/answers", response_model=Incident)
-async def submit_triage_answers(
+def submit_triage_answers(
     incident_id: str,
     request: SubmitAnswersRequest,
 ) -> Incident:
@@ -83,30 +100,29 @@ async def submit_triage_answers(
 
 
 @router.post("/incidents/{incident_id}/triage", response_model=Incident)
-async def submit_triage_answers_alias(
+def submit_triage_answers_alias(
     incident_id: str,
     request: SubmitAnswersRequest,
 ) -> Incident:
     return submit_incident_answers(incident_id, request)
 
 
+@router.patch("/incidents/{incident_id}/context", response_model=Incident)
+def patch_incident_context(
+    incident_id: str,
+    request: IncidentContextUpdate,
+) -> Incident:
+    return update_incident_context(incident_id, request)
+
+
 @router.post("/incidents/{incident_id}/execute", response_model=Incident)
-async def execute_incident_action(
+def execute_incident_action(
     incident_id: str,
     request: ExecuteActionRequest,
 ) -> Incident:
     return execute_incident_action_once(incident_id, request.action)
 
 
-@router.get("/history", response_model=list[HistoryEntry])
-async def fetch_history(
-    session_uid: str | None = Query(default=None),
-    patient_id: str | None = Query(default=None),
-    limit: int = Query(default=25, ge=1, le=100),
-) -> list[HistoryEntry]:
-    return list_history_entries(session_uid=session_uid, patient_id=patient_id, limit=limit)
-
-
 @router.post("/sms/send", response_model=SmsResult)
-async def send_sms_route(request: SmsRequest) -> SmsResult:
+def send_sms_route(request: SmsRequest) -> SmsResult:
     return send_sms_message(request)

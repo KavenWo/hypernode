@@ -89,6 +89,12 @@ class FallSessionStore:
             self._sessions[session_id] = record
         return self.get_session(session_id)
 
+    def upsert_session_record(self, record: FallSessionRecord) -> FallSessionRecord:
+        """Inject an existing session record into the store (rehydration)."""
+        with self._lock:
+            self._sessions[record.session_id] = self._copy_record(record)
+        return self.get_session(record.session_id)
+
     def get_session(self, session_id: str) -> FallSessionRecord | None:
         with self._lock:
             record = self._sessions.get(session_id)

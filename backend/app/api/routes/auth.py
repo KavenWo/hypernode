@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/v1/session", tags=["Session"])
 
 
 @router.post("/bootstrap", response_model=SessionBootstrapResponse)
-async def bootstrap_session(
+def bootstrap_session(
     request: SessionBootstrapRequest, background_tasks: BackgroundTasks
 ) -> SessionBootstrapResponse:
     # Perform a light bootstrap first to return quickly
@@ -27,7 +27,7 @@ async def bootstrap_session(
     background_tasks.add_task(
         background_bootstrap_tasks,
         session_uid=response.session.session_uid,
-        patient_id=response.patient_id,
+        patient_id=request.patient_id or "",
         create_profile=request.create_profile,
     )
     
@@ -35,5 +35,5 @@ async def bootstrap_session(
 
 
 @router.get("/me", response_model=SessionMeResponse)
-async def get_current_session(authorization: str | None = Header(default=None)) -> SessionMeResponse:
+def get_current_session(authorization: str | None = Header(default=None)) -> SessionMeResponse:
     return resolve_session_from_authorization(authorization)

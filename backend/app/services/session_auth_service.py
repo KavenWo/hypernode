@@ -19,12 +19,30 @@ from db.firebase_client import (
     get_or_create_anonymous_session,
     list_session_patient_profiles,
     load_frontend_patient_profile,
+    preview_default_session_patients,
     save_frontend_patient_profile,
     seed_default_session_patients,
 )
 from db.models import AnonymousSession, FrontendPatientProfile
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_session_patient_id(
+    requested_patient_id: str | None,
+    seeded_profiles: list[FrontendPatientProfile],
+    session: AnonymousSession,
+    session_uid: str,
+) -> str:
+    if requested_patient_id:
+        return requested_patient_id
+    if session.active_patient_id:
+        return session.active_patient_id
+    if seeded_profiles:
+        return seeded_profiles[0].patient_id
+    if session.patient_ids:
+        return session.patient_ids[0]
+    return ""
 
 
 class SessionBootstrapRequest(BaseModel):
@@ -101,7 +119,7 @@ def bootstrap_anonymous_session(
     token_payload = verify_firebase_id_token(request.id_token)
     t1 = time.time()
     session_uid = _token_subject(token_payload)
-    patient_id = request.patient_id or session_uid
+    patient_id = request.patient_id
 
     session = get_or_create_anonymous_session(session_uid=session_uid, patient_id=patient_id)
     t2 = time.time()
@@ -116,7 +134,7 @@ def bootstrap_anonymous_session(
             else list_session_patient_profiles(session_uid)
         )
         t3 = time.time()
-        # Refresh session after seeding
+        patient_id = _resolve_session_patient_id(request.patient_id, seeded_profiles, session, session_uid)
         session = get_or_create_anonymous_session(session_uid=session_uid, patient_id=patient_id)
 
         if request.create_profile:
@@ -126,6 +144,8 @@ def bootstrap_anonymous_session(
         t4 = time.time()
         logger.info(f"Bootstrap timing: auth={t1-t0:.3f}s, session={t2-t1:.3f}s, seeding={t3-t2:.3f}s, profile={t4-t3:.3f}s")
     else:
+        seeded_profiles = preview_default_session_patients(session_uid)
+        patient_id = _resolve_session_patient_id(request.patient_id, seeded_profiles, session, session_uid)
         logger.info(f"Light bootstrap timing: auth={t1-t0:.3f}s, session={t2-t1:.3f}s")
 
     return SessionBootstrapResponse(
@@ -139,9 +159,11 @@ def bootstrap_anonymous_session(
 
 def background_bootstrap_tasks(session_uid: str, patient_id: str, create_profile: bool) -> None:
     """Perform heavy Firestore seeding and profile setup in the background."""
-    seed_default_session_patients(session_uid)
+    seeded_profiles = seed_default_session_patients(session_uid)
+    resolved_patient_id = patient_id or (seeded_profiles[0].patient_id if seeded_profiles else "")
+    get_or_create_anonymous_session(session_uid=session_uid, patient_id=resolved_patient_id)
     if create_profile:
-        existing_profile = load_frontend_patient_profile(patient_id=patient_id, session_uid=session_uid)
+        existing_profile = load_frontend_patient_profile(patient_id=resolved_patient_id, session_uid=session_uid)
         profile = existing_profile.model_copy(update={"session_uid": session_uid, "updated_at": datetime.utcnow()})
         save_frontend_patient_profile(profile)
 
@@ -150,8 +172,10 @@ def resolve_session_from_authorization(authorization: str | None) -> SessionMeRe
     token = _extract_bearer_token(authorization)
     token_payload = verify_firebase_id_token(token)
     session_uid = _token_subject(token_payload)
-    patient_id = session_uid
-    session = get_or_create_anonymous_session(session_uid=session_uid, patient_id=patient_id)
+    session = get_or_create_anonymous_session(session_uid=session_uid)
+    patient_id = _resolve_session_patient_id(None, [], session, session_uid)
+    if session.default_patient_seeded and patient_id != session.active_patient_id:
+        session = get_or_create_anonymous_session(session_uid=session_uid, patient_id=patient_id)
     return SessionMeResponse(
         session=session,
         patient_id=patient_id,

@@ -193,6 +193,120 @@ def _fallback_execution_guidance(
     )
 
 
+def _direct_grounded_execution_guidance(
+    *,
+    action: str,
+    clinical_assessment: ClinicalAssessmentSummary,
+    patient_profile: UserMedicalProfile,
+    patient_answers: list[PatientAnswer],
+) -> ExecutionGuidance:
+    """Build deterministic grounded guidance without relying on ADK tool calls.
+
+    This is the safety net for cases like CPR where protocol grounding is
+    mandatory, but the ADK tool wiring or Vertex resource name is broken.
+    """
+
+    from agents.bystander.protocol_grounding import (
+        build_protocol_guidance_summary,
+        collect_required_protocol_intents,
+    )
+    from app.fall.assessment_service import (
+        _build_non_grounded_guidance,
+        _requires_mandatory_protocol_grounding,
+        _run_grounded_guidance_stage,
+        _should_trigger_grounded_guidance,
+        build_interaction_summary,
+    )
+
+    interaction_summary = build_interaction_summary(
+        interaction=None,
+        patient_answers=patient_answers,
+        recommended_action=action,
+    )
+    should_ground_guidance = _should_trigger_grounded_guidance(
+        action=action,
+        clinical_assessment=clinical_assessment,
+        interaction_summary=interaction_summary,
+        allow_grounding=True,
+    )
+    requires_protocol = _requires_mandatory_protocol_grounding(
+        clinical_assessment=clinical_assessment,
+        allow_grounding=True,
+    )
+    forced_protocol_intents = collect_required_protocol_intents(
+        clinical_assessment=clinical_assessment,
+    )
+
+    if should_ground_guidance or requires_protocol:
+        retrieval_plan, retrieval_result, normalized_guidance = _run_grounded_guidance_stage(
+            patient_profile=patient_profile,
+            patient_answers=patient_answers,
+            clinical_severity=clinical_assessment.severity,
+            action=action,
+            forced_intents=forced_protocol_intents,
+        )
+        protocol_guidance = build_protocol_guidance_summary(
+            clinical_assessment=clinical_assessment,
+            retrieval_plan=retrieval_plan,
+            retrieval_result=retrieval_result,
+        )
+        steps = protocol_guidance.steps if protocol_guidance.steps else normalized_guidance.steps
+        warnings = protocol_guidance.warnings if protocol_guidance.warnings else normalized_guidance.warnings
+        escalation_triggers = normalized_guidance.escalation_triggers
+        scenario = protocol_guidance.protocol_key or (
+            "dispatch_wait"
+            if action in {"dispatch_pending_confirmation", "emergency_dispatch"}
+            else "guided_support"
+        )
+        primary_message = (
+            protocol_guidance.communication_message
+            or protocol_guidance.primary_message
+            or normalized_guidance.primary_message
+            or (steps[0] if steps else "")
+        )
+        logger.info(
+            "[AdkExecution] Direct grounded fallback succeeded | action=%s protocol=%s steps=%d source=%s",
+            action,
+            protocol_guidance.protocol_key or "none",
+            len(steps),
+            retrieval_result.get("retrieval_source", "grounded"),
+        )
+        return ExecutionGuidance(
+            scenario=scenario,
+            primary_message=primary_message,
+            steps=steps,
+            warnings=warnings,
+            escalation_triggers=escalation_triggers,
+            quick_replies=["Done", "Need next step", "Condition worse"],
+            protocol_key=protocol_guidance.protocol_key,
+            source=retrieval_result.get("retrieval_source", "grounded"),
+        )
+
+    logger.info(
+        "[AdkExecution] Direct grounded fallback not needed | action=%s severity=%s",
+        action,
+        clinical_assessment.severity,
+    )
+    fallback_guidance = _build_non_grounded_guidance(
+        action=action,
+        clinical_assessment=clinical_assessment,
+    )
+    return ExecutionGuidance(
+        scenario=(
+            "dispatch_wait"
+            if action in {"dispatch_pending_confirmation", "emergency_dispatch"}
+            else ("family_support" if action == "contact_family" else "monitoring")
+        ),
+        primary_message=fallback_guidance.primary_message or (fallback_guidance.steps[0] if fallback_guidance.steps else ""),
+        steps=fallback_guidance.steps,
+        warnings=fallback_guidance.warnings,
+        escalation_triggers=fallback_guidance.escalation_triggers,
+        quick_replies=["Okay", "Pain worse", "Breathing worse"],
+        protocol_key="",
+        source="non_grounded",
+    )
+
+
 def _should_use_adk_execution(
     *,
     action: str,
@@ -335,7 +449,9 @@ async def run_adk_execution_plan(
             "[AdkExecution] Agent failed; falling back to deterministic execution guidance | action=%s",
             action,
         )
-        return _fallback_execution_guidance(
+        return _direct_grounded_execution_guidance(
             action=action,
             clinical_assessment=clinical_assessment,
+            patient_profile=patient_profile,
+            patient_answers=patient_answers,
         )

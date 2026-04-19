@@ -23,6 +23,34 @@ class FallEvent(BaseModel):
     timestamp: str = Field(..., description="ISO8601 timestamp of the detected event.")
     motion_state: str = Field(..., description="State of motion, e.g. 'no_movement', 'rapid_descent'.")
     confidence_score: float = Field(..., description="Confidence score of the fall detection from 0.0 to 1.0.")
+    video_id: str | None = Field(
+        default=None,
+        description="Optional preset demo-video identifier selected by the dashboard.",
+    )
+    video_source: str | None = Field(
+        default=None,
+        description="Optional source label such as local_demo_video or dashboard_simulation.",
+    )
+    video_summary: str | None = Field(
+        default=None,
+        description="Optional short summary of what the selected demo video is expected to show.",
+    )
+
+
+class DemoVideoAnalysisRequest(BaseModel):
+    user_id: str = Field(..., description="Unique identifier for the user.")
+    video_id: str = Field(..., description="Preset demo-video identifier selected by the dashboard.")
+
+
+class DemoVideoAnalysisResponse(BaseModel):
+    video_id: str = Field(..., description="Preset demo-video identifier analyzed by the vision step.")
+    video_label: str = Field(..., description="Display label for the analyzed video.")
+    video_source: str = Field(..., description="Source label for the analyzed media input.")
+    fall_detected: bool = Field(..., description="Whether the model detected a fall in the selected video.")
+    summary: str = Field(..., description="Short model-authored summary of the observed event.")
+    motion_state: str = Field(..., description="Normalized motion state projected into the existing fall pipeline.")
+    confidence_score: float = Field(..., description="Confidence score used to seed the fall pipeline.")
+    analysis_model: str = Field(..., description="Model used for the video analysis pass.")
 
 
 class VitalSigns(BaseModel):
@@ -434,6 +462,9 @@ class DetectionSummary(BaseModel):
     fall_detection_confidence_score: float = Field(..., description="Numeric fall detection confidence score.")
     fall_detection_confidence_band: str = Field(..., description="Band form of fall detection confidence.")
     event_validity: str = Field(..., description="Normalized event validity such as likely_true or uncertain.")
+    video_id: str | None = Field(default=None, description="Optional preset demo-video identifier for controlled MVP runs.")
+    video_source: str | None = Field(default=None, description="Optional source label for the selected media input.")
+    video_summary: str | None = Field(default=None, description="Optional short summary of what the selected media showed.")
 
 
 class ReasoningTraceSummary(BaseModel):
@@ -699,6 +730,10 @@ class CommunicationAgentAnalysis(BaseModel):
     should_surface_execution_update: bool = Field(
         default=False,
         description="Whether the agent thinks an operational update such as family notification or dispatch should be surfaced now.",
+    )
+    execution_signal: str = Field(
+        default="none",
+        description="Controlled execution-control signal such as none, advance_step, repeat_current_step, repair_current_step, request_cpr_guidance, or condition_worse.",
     )
     guidance_intent: str = Field(default="question", description="Conversational intent such as question, instruction, clarify, or reassure.")
     next_focus: str = Field(default="general_check", description="What the communication AI wants to learn or accomplish next.")

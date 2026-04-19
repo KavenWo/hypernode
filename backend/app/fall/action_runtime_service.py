@@ -7,9 +7,9 @@ conversation layer can focus on transcript flow and user-facing wording.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
 from hashlib import sha1
+import logging
 
 from app.fall.assessment_service import (
     _build_dispatch_ai_summary,
@@ -30,10 +30,26 @@ from app.fall.contracts import (
 )
 from app.fall.execution_service import trigger_emergency
 from app.fall.session_store import fall_session_store
+from app.services.patient_incident_service import (
+    IncidentContextUpdate,
+    IncidentStatus,
+    IncidentStatusUpdate,
+    execute_incident_action_once,
+    get_incident_by_realtime_session_id,
+    update_incident_context,
+    update_incident_status,
+)
+
+logger = logging.getLogger(__name__)
 
 DISPATCH_CONFIRMATION_WINDOW_SECONDS = 15
 MAIN_ACTION_ORDER = ("monitor", "contact_family", "emergency_dispatch")
-_dispatch_confirmation_tasks: dict[str, asyncio.Task[None]] = {}
+
+
+def _cancel_dispatch_confirmation_task(session_id: str) -> None:
+    """No-op now that dispatch confirmation timing is frontend-owned."""
+
+    return None
 
 
 def _default_action_state(action_type: str) -> ActionStateSummary:
@@ -147,12 +163,6 @@ def _get_action_state(session_id: str, action_type: str) -> ActionStateSummary |
     return None
 
 
-def _cancel_dispatch_confirmation_task(session_id: str) -> None:
-    task = _dispatch_confirmation_tasks.pop(session_id, None)
-    if task is not None and not task.done():
-        task.cancel()
-
-
 def _remaining_countdown_seconds(deadline: datetime | None, *, now: datetime | None = None) -> int | None:
     if deadline is None:
         return None
@@ -179,7 +189,7 @@ def _sync_canonical_execution_snapshot(session_id: str, *, session) -> None:
         if dispatch_state.status == "pending_confirmation":
             dispatch_status = DispatchStatus.PENDING_CONFIRMATION
             phase = "dispatch_countdown"
-            countdown_seconds = _remaining_countdown_seconds(dispatch_state.confirmation_deadline)
+            countdown_seconds = dispatch_state.countdown_seconds
         elif dispatch_state.status == "completed":
             dispatch_status = (
                 DispatchStatus.CONFIRMED
@@ -195,7 +205,7 @@ def _sync_canonical_execution_snapshot(session_id: str, *, session) -> None:
         elif dispatch_state.desired:
             dispatch_status = DispatchStatus.PENDING_CONFIRMATION
             phase = "dispatch_countdown"
-            countdown_seconds = _remaining_countdown_seconds(dispatch_state.confirmation_deadline)
+            countdown_seconds = dispatch_state.countdown_seconds
         else:
             dispatch_status = DispatchStatus.NOT_REQUESTED
             if phase == "dispatch_countdown":
@@ -275,7 +285,7 @@ def _sync_canonical_dispatch_pending(session_id: str, *, session, dispatch_state
         latest_prompt="Emergency help is preparing to be dispatched.",
         dispatch_status=DispatchStatus.PENDING_CONFIRMATION,
         phase="dispatch_countdown",
-        countdown_seconds=_remaining_countdown_seconds(dispatch_state.confirmation_deadline),
+        countdown_seconds=dispatch_state.countdown_seconds,
     )
 
 
@@ -304,6 +314,8 @@ def _sync_canonical_dispatch_executed(
 
 def _sync_canonical_dispatch_cancelled(session_id: str, *, session) -> None:
     fallback_prompt = "Emergency dispatch was cancelled. Continue monitoring closely."
+    if session.latest_analysis and session.latest_analysis.followup_text:
+        fallback_prompt = session.latest_analysis.followup_text
     if session.reasoning_decision and session.reasoning_decision.instructions:
         fallback_prompt = session.reasoning_decision.instructions
     _store_canonical_dispatch_state(
@@ -317,15 +329,178 @@ def _sync_canonical_dispatch_cancelled(session_id: str, *, session) -> None:
     )
 
 
+def request_emergency_dispatch_confirmation(
+    session_id: str,
+    *,
+    reason: str,
+    detail: str,
+) -> ActionStateSummary | None:
+    session = fall_session_store.get_session(session_id)
+    if session is None:
+        return None
+
+    state_map = _normalize_action_state_map(session.action_states)
+    dispatch_state = state_map["emergency_dispatch"]
+    now = datetime.utcnow()
+    deadline = now + timedelta(seconds=DISPATCH_CONFIRMATION_WINDOW_SECONDS)
+    updated_state = dispatch_state.model_copy(
+        update={
+            "desired": True,
+            "status": "pending_confirmation",
+            "reason": reason,
+            "detail": detail,
+            "requires_confirmation": True,
+            "confirmation_status": "pending",
+            "countdown_seconds": DISPATCH_CONFIRMATION_WINDOW_SECONDS,
+            "confirmation_deadline": deadline,
+            "last_updated_at": now,
+        }
+    )
+    state_map["emergency_dispatch"] = updated_state
+    execution_updates = _set_execution_update(
+        session.execution_updates,
+        ExecutionUpdate(
+            type="emergency_dispatch",
+            status="pending_confirmation",
+            detail=detail,
+            message_text=updated_state.message_text,
+            script_lines=updated_state.script_lines,
+            sent_at=now,
+        ),
+    )
+    fall_session_store.store_action_execution_state(
+        session_id=session_id,
+        action_states=_ordered_action_states(state_map),
+        execution_updates=execution_updates,
+    )
+    refreshed_session = fall_session_store.get_session(session_id)
+    if refreshed_session is not None:
+        _sync_canonical_dispatch_pending(
+            session_id,
+            session=refreshed_session,
+            dispatch_state=updated_state,
+        )
+        latest_session = fall_session_store.get_session(session_id)
+        if latest_session is not None:
+            _sync_canonical_execution_snapshot(session_id, session=latest_session)
+    return updated_state
+
+
+def request_contact_family_action(
+    session_id: str,
+    *,
+    reason: str,
+    detail: str,
+    message_text: str,
+) -> ActionStateSummary | None:
+    session = fall_session_store.get_session(session_id)
+    if session is None:
+        return None
+
+    state_map = _normalize_action_state_map(session.action_states)
+    family_state = state_map["contact_family"]
+    now = datetime.utcnow()
+    updated_state = family_state.model_copy(
+        update={
+            "desired": True,
+            "status": "completed",
+            "reason": reason,
+            "detail": detail,
+            "message_text": message_text,
+            "script_lines": [message_text],
+            "occurrence_count": max(family_state.occurrence_count, 0) + 1,
+            "last_updated_at": now,
+        }
+    )
+    state_map["contact_family"] = updated_state
+    execution_updates = _set_execution_update(
+        session.execution_updates,
+        ExecutionUpdate(
+            type="inform_family",
+            status="completed",
+            detail=detail,
+            message_text=message_text,
+            script_lines=[message_text],
+            occurrence_count=updated_state.occurrence_count,
+            sent_at=now,
+        ),
+    )
+    fall_session_store.store_action_execution_state(
+        session_id=session_id,
+        action_states=_ordered_action_states(state_map),
+        execution_updates=execution_updates,
+    )
+    refreshed_session = fall_session_store.get_session(session_id)
+    if refreshed_session is not None:
+        _sync_canonical_execution_snapshot(session_id, session=refreshed_session)
+    return updated_state
+
+
 async def _execute_dispatch_action(session_id: str, *, confirmation_status: str) -> ActionStateSummary | None:
     session = fall_session_store.get_session(session_id)
-    if session is None or session.latest_assessment is None:
+    if session is None:
         return None
 
     state_map = _normalize_action_state_map(session.action_states)
     dispatch_state = state_map["emergency_dispatch"]
     if dispatch_state.status in {"completed", "cancelled"}:
         return dispatch_state
+
+    if session.latest_assessment is None:
+        incident = get_incident_by_realtime_session_id(session_id)
+        if incident is None:
+            return None
+
+        executed_incident = execute_incident_action_once(incident.incident_id, "call_ambulance")
+        completed_detail = (
+            "Emergency dispatch was confirmed and executed."
+            if confirmation_status == "confirmed"
+            else "Emergency dispatch was executed automatically after the 15-second confirmation window expired."
+        )
+        completed_state = dispatch_state.model_copy(
+            update={
+                "desired": True,
+                "status": "completed",
+                "detail": completed_detail,
+                "message_text": dispatch_state.message_text,
+                "requires_confirmation": False,
+                "confirmation_status": confirmation_status,
+                "countdown_seconds": None,
+                "confirmation_deadline": None,
+                "incident_id": executed_incident.incident_id,
+                "last_updated_at": datetime.utcnow(),
+            }
+        )
+        state_map["emergency_dispatch"] = completed_state
+
+        updated_execution = _set_execution_update(
+            session.execution_updates,
+            ExecutionUpdate(
+                type="emergency_dispatch",
+                status="completed",
+                detail=completed_detail,
+                message_text=completed_state.message_text,
+                script_lines=completed_state.script_lines,
+                sent_at=completed_state.last_updated_at,
+                incident_id=executed_incident.incident_id,
+            ),
+        )
+        fall_session_store.store_action_execution_state(
+            session_id=session_id,
+            action_states=_ordered_action_states(state_map),
+            execution_updates=updated_execution,
+        )
+        refreshed_session = fall_session_store.get_session(session_id)
+        if refreshed_session is not None:
+            _sync_canonical_dispatch_executed(
+                session_id,
+                session=refreshed_session,
+                confirmation_status=confirmation_status,
+            )
+            latest_session = fall_session_store.get_session(session_id)
+            if latest_session is not None:
+                _sync_canonical_execution_snapshot(session_id, session=latest_session)
+        return completed_state
 
     patient_answers = _answers_from_conversation_history(session.conversation_history)
     patient_profile = load_user_profile(session.event.user_id)
@@ -400,29 +575,9 @@ async def _execute_dispatch_action(session_id: str, *, confirmation_status: str)
     return completed_state
 
 
-async def _run_dispatch_confirmation_timeout(session_id: str, deadline: datetime) -> None:
-    try:
-        remaining = (deadline - datetime.utcnow()).total_seconds()
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        current_state = _get_action_state(session_id, "emergency_dispatch")
-        if current_state is None or current_state.status != "pending_confirmation":
-            return
-        if current_state.confirmation_deadline and current_state.confirmation_deadline != deadline:
-            return
-        await _execute_dispatch_action(session_id, confirmation_status="timed_out")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        current_task = _dispatch_confirmation_tasks.get(session_id)
-        if current_task is not None and current_task.done():
-            _dispatch_confirmation_tasks.pop(session_id, None)
-
-
 def sync_dispatch_confirmation_task(session_id: str) -> None:
     dispatch_state = _get_action_state(session_id, "emergency_dispatch")
-    if dispatch_state is None or dispatch_state.status != "pending_confirmation" or dispatch_state.confirmation_deadline is None:
-        _cancel_dispatch_confirmation_task(session_id)
+    if dispatch_state is None or dispatch_state.status != "pending_confirmation":
         return
 
     session = fall_session_store.get_session(session_id)
@@ -432,16 +587,9 @@ def sync_dispatch_confirmation_task(session_id: str) -> None:
         if latest_session is not None:
             _sync_canonical_execution_snapshot(session_id, session=latest_session)
 
-    existing_task = _dispatch_confirmation_tasks.get(session_id)
-    if existing_task is not None and not existing_task.done():
-        return
-
-    task = asyncio.create_task(_run_dispatch_confirmation_timeout(session_id, dispatch_state.confirmation_deadline))
-    _dispatch_confirmation_tasks[session_id] = task
-
 
 def reset_action_runtime_session(session_id: str) -> None:
-    _cancel_dispatch_confirmation_task(session_id)
+    return None
 
 
 def sync_action_state_with_assessment(
@@ -691,7 +839,174 @@ async def apply_session_action_decision(
 ) -> SessionActionResponse | None:
     session = fall_session_store.get_session(session_id)
     if session is None:
-        return None
+        logger.info("[Session %s] Not found in memory | looking up incident by realtime ID", session_id)
+        try:
+            incident = get_incident_by_realtime_session_id(session_id)
+        except Exception as exc:
+            logger.error("[Session %s] Database error during recovery: %s", session_id, exc, exc_info=True)
+            return None
+
+        if incident is None:
+            logger.warning("[Session %s] 404: Session not in memory and no incident found in DB", session_id)
+            return None
+
+        logger.info("[Session %s] Recovered state from incident %s", session_id, incident.incident_id)
+
+        if action_type != "emergency_dispatch":
+            raise ValueError(f"Unsupported action control: {action_type}")
+
+        action_states = [
+            ActionStateSummary.model_validate(item)
+            for item in (incident.action_states or [])
+        ]
+        dispatch_state = next((item for item in action_states if item.action_type == "emergency_dispatch"), None)
+        if dispatch_state is None:
+            dispatch_state = ActionStateSummary(
+                action_type="emergency_dispatch",
+                desired=True,
+                status="pending_confirmation",
+                reason="Recovered dispatch confirmation from persisted incident state.",
+                detail="Emergency dispatch confirmation was recovered from persisted incident state.",
+                requires_confirmation=True,
+                confirmation_status="pending",
+                countdown_seconds=DISPATCH_CONFIRMATION_WINDOW_SECONDS,
+                last_updated_at=datetime.utcnow(),
+            )
+            action_states.append(dispatch_state)
+
+        execution_updates = [
+            ExecutionUpdate.model_validate(item)
+            for item in (incident.execution_updates or [])
+        ]
+        execution_state = ExecutionState.model_validate(incident.execution_state or {})
+        canonical_communication_state = CommunicationState.model_validate(
+            incident.canonical_communication_state
+            or {
+                "session_id": session_id,
+                "state": SessionState.AWAITING_DISPATCH_CONFIRMATION,
+            }
+        )
+
+        if decision == "confirm":
+            updated_incident = execute_incident_action_once(incident.incident_id, "call_ambulance")
+            action_message = (
+                updated_incident.action_taken.get("message")
+                if updated_incident.action_taken
+                else "Emergency dispatch was confirmed and executed."
+            )
+            updated_state = dispatch_state.model_copy(
+                update={
+                    "desired": True,
+                    "status": "completed",
+                    "detail": action_message,
+                    "requires_confirmation": False,
+                    "confirmation_status": "confirmed",
+                    "countdown_seconds": None,
+                    "confirmation_deadline": None,
+                    "last_updated_at": datetime.utcnow(),
+                }
+            )
+            execution_updates = _set_execution_update(
+                execution_updates,
+                ExecutionUpdate(
+                    type="emergency_dispatch",
+                    status="completed",
+                    detail=action_message,
+                    message_text=updated_state.message_text,
+                    script_lines=updated_state.script_lines,
+                    sent_at=updated_state.last_updated_at,
+                    incident_id=updated_incident.incident_id,
+                ),
+            )
+            execution_state = execution_state.model_copy(
+                update={
+                    "phase": "dispatch_triggered",
+                    "countdown_seconds": None,
+                    "dispatch_status": DispatchStatus.CONFIRMED,
+                }
+            )
+            canonical_communication_state = canonical_communication_state.model_copy(
+                update={
+                    "state": SessionState.EXECUTION_IN_PROGRESS,
+                    "latest_prompt": "Emergency help has been called.",
+                }
+            )
+            session_state = SessionState.EXECUTION_IN_PROGRESS
+            incident_status = IncidentStatus.ACTION_TAKEN
+        elif decision == "cancel":
+            updated_state = dispatch_state.model_copy(
+                update={
+                    "desired": False,
+                    "status": "cancelled",
+                    "detail": "Emergency dispatch was cancelled before execution.",
+                    "requires_confirmation": False,
+                    "confirmation_status": "cancelled",
+                    "countdown_seconds": None,
+                    "confirmation_deadline": None,
+                    "last_updated_at": datetime.utcnow(),
+                }
+            )
+            execution_updates = _set_execution_update(
+                execution_updates,
+                ExecutionUpdate(
+                    type="emergency_dispatch",
+                    status="cancelled",
+                    detail=updated_state.detail,
+                    message_text=updated_state.message_text,
+                    script_lines=updated_state.script_lines,
+                    sent_at=updated_state.last_updated_at,
+                ),
+            )
+            execution_state = execution_state.model_copy(
+                update={
+                    "phase": "guidance",
+                    "countdown_seconds": None,
+                    "dispatch_status": DispatchStatus.CANCELLED,
+                }
+            )
+            canonical_communication_state = canonical_communication_state.model_copy(
+                update={
+                    "state": SessionState.EXECUTION_IN_PROGRESS,
+                    "latest_prompt": "Emergency dispatch was cancelled. Continue monitoring closely.",
+                }
+            )
+            session_state = SessionState.EXECUTION_IN_PROGRESS
+            incident_status = IncidentStatus.MONITORING
+        else:
+            raise ValueError(f"Unsupported decision: {decision}")
+
+        next_action_states: list[ActionStateSummary] = []
+        for item in action_states:
+            if item.action_type == "emergency_dispatch":
+                next_action_states.append(updated_state)
+            else:
+                next_action_states.append(item)
+
+        update_incident_context(
+            incident.incident_id,
+            IncidentContextUpdate(
+                canonical_communication_state=canonical_communication_state.model_dump(mode="json"),
+                execution_state=execution_state.model_dump(mode="json"),
+                execution_updates=[item.model_dump(mode="json") for item in execution_updates],
+                action_states=[item.model_dump(mode="json") for item in next_action_states],
+            ),
+        )
+        update_incident_status(
+            incident.incident_id,
+            IncidentStatusUpdate(state=incident_status),
+        )
+
+        return SessionActionResponse(
+            session_id=session_id,
+            action_state=updated_state,
+            execution_updates=execution_updates,
+            state=session_state,
+            canonical_communication_state=canonical_communication_state,
+            reasoning_decision=(
+                None if incident.reasoning_decision is None else incident.reasoning_decision
+            ),
+            execution_state=execution_state,
+        )
 
     if action_type != "emergency_dispatch":
         raise ValueError(f"Unsupported action control: {action_type}")
@@ -779,6 +1094,8 @@ def _answers_from_conversation_history(conversation_history) -> list[PatientAnsw
 __all__ = [
     "apply_session_action_decision",
     "build_visible_execution_state_summary",
+    "request_contact_family_action",
+    "request_emergency_dispatch_confirmation",
     "reset_action_runtime_session",
     "sync_action_state_with_assessment",
     "sync_dispatch_confirmation_task",

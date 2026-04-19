@@ -32,6 +32,47 @@ COMMUNICATION_FACT_VOCAB = {
     "stable_speaking": ["i can talk", "talking fine", "speaking clearly"],
 }
 
+EXECUTION_SIGNAL_VOCAB = {
+    "advance_step": [
+        "need next step",
+        "next step",
+        "next",
+        "done",
+        "okay",
+        "ok",
+        "got it",
+        "understood",
+        "what next",
+    ],
+    "repeat_current_step": [
+        "repeat",
+        "say again",
+        "again",
+    ],
+    "repair_current_step": [
+        "not sure",
+        "confused",
+        "wrong",
+        "did it wrong",
+        "messed up",
+        "don't understand",
+    ],
+    "request_cpr_guidance": [
+        "how to do cpr",
+        "how do cpr",
+        "how to do it",
+        "cpr step",
+        "how to perform cpr",
+    ],
+    "condition_worse": [
+        "condition worse",
+        "getting worse",
+        "worse now",
+        "not responding now",
+        "breathing worse",
+    ],
+}
+
 
 def _normalize_message_key(text: str | None) -> str:
     return " ".join((text or "").strip().lower().split())
@@ -170,6 +211,27 @@ def _summarize_reasoning_handoff(assessment: FallAssessment | None) -> str:
     )
 
 
+def _summarize_active_guidance(assessment: FallAssessment | None, previous_analysis: CommunicationAgentAnalysis | None) -> str:
+    if assessment is None:
+        return "No active grounded guidance."
+    protocol = assessment.protocol_guidance
+    if protocol and protocol.ready_for_communication and protocol.steps:
+        current_hint = previous_analysis.immediate_step if previous_analysis and previous_analysis.immediate_step else protocol.steps[0]
+        return (
+            f"protocol={protocol.protocol_key or 'none'}; "
+            f"authoritative_step={current_hint}; "
+            f"available_steps={', '.join(protocol.steps[:4])}"
+        )
+    if assessment.guidance.steps:
+        current_hint = previous_analysis.immediate_step if previous_analysis and previous_analysis.immediate_step else assessment.guidance.steps[0]
+        return (
+            f"protocol=generic_guidance; "
+            f"authoritative_step={current_hint}; "
+            f"available_steps={', '.join(assessment.guidance.steps[:4])}"
+        )
+    return "No active grounded guidance."
+
+
 def _heuristic_role(message_text: str) -> tuple[str, bool, bool]:
     text = (message_text or "").strip().lower()
     if not text:
@@ -200,6 +262,18 @@ def _extract_facts(message_text: str, role: str) -> list[str]:
     return sorted(set(facts))
 
 
+def _infer_execution_signal(message_text: str) -> str:
+    normalized = _normalize_message_key(message_text)
+    if not normalized:
+        return "none"
+    for signal, keywords in EXECUTION_SIGNAL_VOCAB.items():
+        if any(keyword in normalized for keyword in keywords):
+            return signal
+    if "cpr" in normalized and ("how" in normalized or "step" in normalized or "what do i do" in normalized):
+        return "request_cpr_guidance"
+    return "none"
+
+
 def _heuristic_analysis(
     *,
     latest_message: str,
@@ -224,6 +298,7 @@ def _heuristic_analysis(
             reasoning_needed=False,
             reasoning_reason="The session just started, so the first step is a patient-first check.",
             should_surface_execution_update=False,
+            execution_signal="none",
             guidance_intent="patient_check",
             next_focus="responsiveness",
             immediate_step=None,
@@ -238,6 +313,7 @@ def _heuristic_analysis(
     acknowledged = {item.strip().lower() for item in (acknowledged_reasoning_triggers or set()) if item and item.strip()}
     new_critical_facts = critical_facts.intersection(facts).difference(acknowledged)
     reasoning_needed = bool(new_critical_facts)
+    execution_signal = _infer_execution_signal(latest_message)
     previous_open_question = previous_analysis.open_question_key if previous_analysis else None
     resolved_question_key = _resolved_question_key_from_facts(set(facts))
     open_question_resolved = bool(previous_open_question and resolved_question_key == previous_open_question)
@@ -313,6 +389,7 @@ def _heuristic_analysis(
             else "No new escalation reason was detected beyond what reasoning already knows."
         ),
         should_surface_execution_update=action in {"contact_family", "dispatch_pending_confirmation", "emergency_dispatch"},
+        execution_signal=execution_signal,
         guidance_intent="instruction" if immediate_step else "question",
         next_focus=next_focus,
         immediate_step=immediate_step,
@@ -472,6 +549,7 @@ async def analyze_communication_turn(
         previous_communication_summary=_summarize_previous_analysis(previous_analysis),
         acknowledged_reasoning_summary=_summarize_acknowledged_reasoning_triggers(acknowledged_reasoning_triggers),
         execution_state_summary=build_visible_execution_state_summary(execution_updates or []),
+        active_guidance_summary=_summarize_active_guidance(previous_assessment, previous_analysis),
     )
 
     try:
