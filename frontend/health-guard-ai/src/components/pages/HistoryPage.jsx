@@ -96,7 +96,7 @@ function Section({ title, children }) {
 }
 
 export default function HistoryPage({ incidentLog, setIncidentLog, patientProfiles, authSession }) {
-  const [expandedId, setExpandedId] = useState(null);
+  const [expandedIds, setExpandedIds] = useState({});
   const [details, setDetails] = useState({});
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -120,12 +120,15 @@ export default function HistoryPage({ incidentLog, setIncidentLog, patientProfil
 
   const handleExpand = async (incidentId, sessionUid) => {
     if (!incidentId) return;
-    if (expandedId === incidentId) {
-      setExpandedId(null);
-      return;
-    }
-    setExpandedId(incidentId);
-    if (!details[incidentId]) {
+    
+    const isExpanding = !expandedIds[incidentId];
+    
+    setExpandedIds(prev => ({
+      ...prev,
+      [incidentId]: isExpanding
+    }));
+
+    if (isExpanding && !details[incidentId]) {
       setLoading(true);
       try {
         const data = await fetchIncidentRecord(incidentId, sessionUid);
@@ -176,7 +179,7 @@ export default function HistoryPage({ incidentLog, setIncidentLog, patientProfil
               <div className="hist-name" style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
                 {entry.event}
                 <span style={{ float: 'right', fontSize: 10, color: 'var(--text-secondary)', marginTop: 4 }}>
-                  {expandedId === entry.incidentId ? '▼' : '►'}
+                  {expandedIds[entry.incidentId] ? '▼' : '►'}
                 </span>
               </div>
               <div className="hist-time" style={{ opacity: 0.8 }}>
@@ -185,13 +188,11 @@ export default function HistoryPage({ incidentLog, setIncidentLog, patientProfil
             </div>
           </div>
 
-          {expandedId === entry.incidentId && (
+          {expandedIds[entry.incidentId] && (
             <div className="hist-expanded" style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 11, color: "var(--text-secondary)", cursor: "default" }} onClick={(e) => e.stopPropagation()}>
               <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                <p className="hist-body" style={{ margin: "0 0 12px 0", fontSize: 11 }}>{entry.summary}</p>
                 <div className="hist-footer" style={{ marginTop: 0 }}>
                   <span className={`tag ${sevColor(entry.severity)}`}>Severity: {entry.severity}</span>
-                  <span className="tag">{entry.action}</span>
                 </div>
               </div>
 
@@ -257,18 +258,7 @@ export default function HistoryPage({ incidentLog, setIncidentLog, patientProfil
                     </Section>
                   )}
 
-                  {details[entry.incidentId].triage_answers?.length > 0 && (
-                    <Section title="Triage Signals">
-                      <div style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "12px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
-                        {details[entry.incidentId].triage_answers.map((qa, i) => (
-                          <div key={i}>
-                            <div style={{ fontWeight: 500, color: "var(--accent-blue)", marginBottom: 2 }}>{qa.question}</div>
-                            <div style={{ color: "var(--text-primary)" }}>{String(qa.answer ?? "")}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </Section>
-                  )}
+
 
                   {getTranscript(details[entry.incidentId]).length > 0 && (
                     <Section title="Conversation Transcript">

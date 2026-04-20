@@ -13,9 +13,6 @@ import os
 import re
 
 from agents.communication.prompts import build_communication_analysis_prompt
-from agents.communication.session_agent import (
-    _finalize_analysis_memory,
-)
 from agents.shared.errors import parse_ai_error
 from agents.shared.schemas import (
     CommunicationAgentAnalysis,
@@ -411,6 +408,116 @@ def _normalize_analysis_payload(payload: dict) -> dict:
             normalized[field] = str(value).strip()
 
     return normalized
+
+
+def _resolved_question_key_from_facts(facts: set[str]) -> str | None:
+    if {"breathing_normal", "abnormal_breathing", "not_breathing"}.intersection(facts):
+        return "breathing"
+    if {"pain_present", "mild_pain", "chest_pain"}.intersection(facts):
+        return "pain"
+    if "head_strike" in facts:
+        return "head_injury"
+    if "cannot_stand" in facts:
+        return "mobility"
+    return None
+
+
+def _state_summary(*, resolved_fact_keys: list[str], open_question_key: str | None, next_focus: str) -> str:
+    resolved = ", ".join(resolved_fact_keys) if resolved_fact_keys else "none"
+    return f"Resolved: {resolved}. Open question: {open_question_key or 'none'}. Next focus: {next_focus}."
+
+
+def _finalize_analysis_memory(
+    *,
+    analysis: CommunicationAgentAnalysis,
+    previous_analysis: CommunicationAgentAnalysis | None,
+) -> CommunicationAgentAnalysis:
+    previous_resolved = set(previous_analysis.resolved_fact_keys if previous_analysis else [])
+    extracted_facts = set(analysis.extracted_facts)
+    resolved_facts = sorted(
+        previous_resolved.union(
+            extracted_facts.intersection({"breathing_normal", "mild_pain", "patient_ok", "stable_speaking"})
+        )
+    )
+    previous_open_question = previous_analysis.open_question_key if previous_analysis else None
+    resolved_question_key = _resolved_question_key_from_facts(extracted_facts)
+    open_question_resolved = bool(previous_open_question and resolved_question_key == previous_open_question)
+    open_question_key = analysis.open_question_key
+
+    if not open_question_key:
+        open_question_key = None
+    if open_question_resolved and open_question_key == previous_open_question:
+        open_question_key = None
+    if open_question_key == "none":
+        open_question_key = None
+
+    conversation_state_summary = (analysis.conversation_state_summary or "").strip()
+    if not conversation_state_summary:
+        conversation_state_summary = _state_summary(
+            resolved_fact_keys=resolved_facts,
+            open_question_key=open_question_key,
+            next_focus=analysis.next_focus,
+        )
+
+    return analysis.model_copy(
+        update={
+            "resolved_fact_keys": resolved_facts,
+            "open_question_key": open_question_key,
+            "open_question_resolved": open_question_resolved,
+            "conversation_state_summary": conversation_state_summary,
+        }
+    )
+
+
+def _safe_pending_dispatch_followup(target: str) -> tuple[str, str | None]:
+    if target == "bystander":
+        return "I may need to call emergency help. Is the patient awake and breathing normally?", None
+    if target == "patient":
+        return "I may need emergency help. Are you breathing normally right now?", None
+    return "Emergency help may be needed. Tell me if the patient is awake and breathing normally?", None
+
+
+def _apply_assessment_language_guardrails(
+    *,
+    analysis: CommunicationAgentAnalysis,
+    assessment: FallAssessment | None,
+) -> CommunicationAgentAnalysis:
+    if assessment is None:
+        return analysis
+
+    action = assessment.action.recommended
+    text = (analysis.followup_text or "").strip()
+    lowered = text.lower()
+    claims_dispatch_confirmed = any(
+        phrase in lowered
+        for phrase in [
+            "help is on the way",
+            "ambulance is on the way",
+            "emergency help is on the way",
+            "an ambulance is coming",
+        ]
+    )
+
+    if action == "dispatch_pending_confirmation" and claims_dispatch_confirmed:
+        safe_text, safe_step = _safe_pending_dispatch_followup(analysis.communication_target)
+        return analysis.model_copy(
+            update={
+                "followup_text": safe_text,
+                "immediate_step": safe_step or analysis.immediate_step,
+                "guidance_intent": "question",
+            }
+        )
+
+    if action != "emergency_dispatch" and claims_dispatch_confirmed:
+        safe_text, safe_step = _safe_pending_dispatch_followup(analysis.communication_target)
+        return analysis.model_copy(
+            update={
+                "followup_text": safe_text,
+                "immediate_step": safe_step or analysis.immediate_step,
+            }
+        )
+
+    return analysis
 
 
 def _build_communication_agent():

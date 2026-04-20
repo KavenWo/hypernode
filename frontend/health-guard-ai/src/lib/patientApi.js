@@ -146,6 +146,10 @@ export async function fetchSessionIncidents(sessionUid) {
       hour12: false,
     });
 
+    let eventLabel = humanizeEvent(entry.event_type);
+    if (entry.fall_detected === true) eventLabel = "Fall Detected";
+    else if (entry.fall_detected === false) eventLabel = "No Fall Detected";
+
     return {
       id: entry.incident_id,
       incidentId: entry.incident_id,
@@ -153,7 +157,7 @@ export async function fetchSessionIncidents(sessionUid) {
       patientId: entry.patient_id,
       timestamp: timestampStr,
       profile: entry.patient_name || entry.patient_id || "Unknown Patient",
-      event: humanizeEvent(entry.event_type),
+      event: eventLabel,
       severity: humanizeSeverity(entry.severity),
       action: humanizeAction(entry.action_taken),
       summary: entry.summary,

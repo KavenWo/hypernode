@@ -18,6 +18,7 @@ def _label_from_filename(filename: str, index: int) -> str:
 def _build_demo_video_registry() -> dict[str, dict[str, object]]:
     registry: dict[str, dict[str, object]] = {}
     video_files = sorted(DEMO_VIDEO_DIRECTORY.glob("*.mp4"))
+    print(f"[DemoRegistry] Scanning {DEMO_VIDEO_DIRECTORY} -> Found: {[f.name for f in video_files]}")
     for index, video_path in enumerate(video_files, start=1):
         video_id = video_path.stem
         registry[video_id] = {
@@ -35,7 +36,9 @@ def _build_demo_video_registry() -> dict[str, dict[str, object]]:
     return registry
 
 
-DEMO_VIDEO_REGISTRY: dict[str, dict[str, object]] = _build_demo_video_registry()
+def get_demo_video_registry() -> dict[str, dict[str, object]]:
+    """Build and return the demo video registry dynamically."""
+    return _build_demo_video_registry()
 
 
 def get_demo_video(video_id: str | None) -> dict[str, object] | None:
@@ -43,7 +46,7 @@ def get_demo_video(video_id: str | None) -> dict[str, object] | None:
 
     if not video_id:
         return None
-    return DEMO_VIDEO_REGISTRY.get(video_id)
+    return get_demo_video_registry().get(video_id)
 
 
 def get_demo_video_path(video_id: str | None) -> Path | None:
@@ -62,7 +65,8 @@ def list_demo_videos() -> list[dict[str, object]]:
     """Return frontend-safe metadata for the available preset demo videos."""
 
     items: list[dict[str, object]] = []
-    for metadata in DEMO_VIDEO_REGISTRY.values():
+    registry = get_demo_video_registry()
+    for metadata in registry.values():
         path = get_demo_video_path(str(metadata["id"]))
         items.append(
             {

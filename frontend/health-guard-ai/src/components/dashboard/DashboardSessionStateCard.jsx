@@ -206,11 +206,16 @@ export default function DashboardSessionStateCard({
   }
 
   // Sentinel Agent Logic
-  const sentinelStatus = isSentinelAnalyzing ? "pending" : sentinelDetection ? (latestVideoAnalysis?.fall_detected || detection ? "success" : "idle") : "idle";
+  const sentinelStatus = isSentinelAnalyzing
+    ? "pending"
+    : sentinelDetection
+      ? (sentinelDetection.fall_detected === false ? "success" : (sentinelDetection.fall_detected || detection ? "success" : "idle"))
+      : "idle";
+
   const sentinelStatusText = isSentinelAnalyzing
     ? "Analyzing"
     : latestVideoAnalysis
-      ? (latestVideoAnalysis.fall_detected ? "Fall Detected" : "No Fall")
+      ? (latestVideoAnalysis.fall_detected ? "Fall Detected" : "No Fall Detected")
       : sentinelDetection?.video_id
         ? "Video Analyzed"
         : sentinelDetection
@@ -235,11 +240,13 @@ export default function DashboardSessionStateCard({
       )}
 
       {/* Sentinel Agent */}
-      <div className="agent-card">
+      <div className={`agent-card ${sentinelStatus === 'success' ? 'dashboard-tone-success' : ''}`}>
         <div className="agent-header" style={{ alignItems: "flex-start" }}>
           <div className="agent-title-group">
             <div className={`agent-icon-box ${sentinelStatus} ${isSentinelAnalyzing ? 'pulsing' : ''}`} style={{ marginTop: 2 }}>
-              <Shield size={14} />
+              <div style={{ width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Shield size={18} strokeWidth={2.2} />
+              </div>
             </div>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -308,16 +315,17 @@ export default function DashboardSessionStateCard({
         <div className="agent-header" style={{ alignItems: "flex-start" }}>
           <div className="agent-title-group">
             <div className={`agent-icon-box ${commStatus} ${isCommRunning ? 'pulsing' : ''}`} style={{ marginTop: 2 }}>
-              <MessageSquare size={14} />
+              <div style={{ width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <MessageSquare size={18} strokeWidth={2.2} />
+              </div>
             </div>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ fontSize: 10, fontWeight: 700 }}>Communication Agent</div>
-                <span style={{ fontSize: 9, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 11, fontWeight: 700 }}>Communication Agent</div>
+                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
                   Gemini 2.5 Flash
                 </span>
               </div>
-
               <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
                 Used to facilitate dialogue, interpret intent, and guide the emergency conversation flow.
               </div>
@@ -377,16 +385,17 @@ export default function DashboardSessionStateCard({
         <div className="agent-header" style={{ alignItems: "flex-start" }}>
           <div className="agent-title-group">
             <div className={`agent-icon-box ${reasoningStatus} ${reasoningPulsing ? 'pulsing' : ''}`} style={{ marginTop: 2 }}>
-              <BrainCircuit size={14} />
+              <div style={{ width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <BrainCircuit size={18} strokeWidth={2.2} />
+              </div>
             </div>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ fontSize: 10, fontWeight: 700 }}>Reasoning Agent</div>
+                <div style={{ fontSize: 11, fontWeight: 700 }}>Reasoning Agent</div>
                 <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
                   Gemini 2.5 Pro
                 </span>
               </div>
-
               <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
                 Evaluates clinical severity, vitals, and situational context to determine interventions.
               </div>
@@ -500,14 +509,16 @@ export default function DashboardSessionStateCard({
 
       {/* Execution Agent */}
       <div className="agent-card">
-        <div className="agent-header">
+        <div className="agent-header" style={{ alignItems: "flex-start" }}>
           <div className="agent-title-group">
             <div className={`agent-icon-box ${executionStatus}`} style={{ marginTop: 2 }}>
-              <Zap size={14} />
+              <div style={{ width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Zap size={18} strokeWidth={2.2} />
+              </div>
             </div>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ fontSize: 10, fontWeight: 700 }}>Execution Agent</div>
+                <div style={{ fontSize: 11, fontWeight: 700 }}>Execution Agent</div>
                 <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
                   Gemini 2.5 Flash
                 </span>
@@ -580,14 +591,16 @@ export default function DashboardSessionStateCard({
 
       {/* Bystander Agent (Retrieval Engine) */}
       <div className="agent-card">
-        <div className="agent-header">
+        <div className="agent-header" style={{ alignItems: "flex-start" }}>
           <div className="agent-title-group">
             <div className={`agent-icon-box ${bystanderStatus} ${groundingStatus === "pending" ? "pulsing" : ""}`} style={{ marginTop: 2 }}>
-              <Users size={14} />
+              <div style={{ width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Users size={18} strokeWidth={2.2} />
+              </div>
             </div>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ fontSize: 10, fontWeight: 700 }}>Bystander Agent</div>
+                <div style={{ fontSize: 11, fontWeight: 700 }}>Bystander Agent</div>
                 <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
                   Vertex AI Search
                 </span>

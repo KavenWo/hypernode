@@ -403,14 +403,16 @@ export default function Dashboard({
     }
   }
 
-  function clearActiveSessionState(message = "") {
+  function clearActiveSessionState(message = "", preserveData = false) {
     stopSessionSync();
     setSessionId("");
-    setLatestTurn(null);
-    setMessages([]);
-    setLatestAssessment(null);
     setStreamStatus("idle");
     setPhase("idle");
+    if (!preserveData) {
+      setLatestTurn(null);
+      setMessages([]);
+      setLatestAssessment(null);
+    }
     if (message) {
       setError(message);
     }
@@ -482,7 +484,7 @@ export default function Dashboard({
         const response = await fetch(`${API_BASE_URL}/api/v1/events/fall/session-state/${sessionId}`);
         if (response.status === 404) {
           if (!cancelled) {
-            clearActiveSessionState("The live session is no longer available.");
+            clearActiveSessionState("The live session is no longer available.", true);
           }
           return;
         }
@@ -531,7 +533,7 @@ export default function Dashboard({
 
     stream.addEventListener("session_closed", () => {
       if (!cancelled) {
-        clearActiveSessionState("The live session has ended.");
+        clearActiveSessionState("The live session has ended.", true);
       }
     });
 
@@ -685,7 +687,7 @@ export default function Dashboard({
     const activeSessionId = sessionId || sessionIdRef.current;
     abortActiveRequest();
     stopSessionSync();
-    clearActiveSessionState();
+    clearActiveSessionState("", true);
 
     if (activeSessionId) {
       try {
@@ -699,6 +701,7 @@ export default function Dashboard({
   }
 
   async function startSession() {
+    resetConversationState();
     abortActiveRequest();
     const controller = new AbortController();
     activeRequestControllerRef.current = controller;
@@ -730,7 +733,31 @@ export default function Dashboard({
         videoAnalysis = analysisPayload;
         setLatestVideoAnalysis(analysisPayload);
         if (!analysisPayload.fall_detected) {
-          setError(analysisPayload.summary || "Gemini did not detect a fall in the selected clip.");
+          if (sessionUid) {
+            const incident = await createIncident({
+              sessionUid,
+              patientId: profile.patientId,
+              simulationTrigger: {
+                motion_state: analysisPayload.motion_state,
+                confidence_score: analysisPayload.confidence_score,
+                video_id: analysisPayload.video_id,
+                fall_detected: false,
+              },
+              videoMetadata: {
+                source: analysisPayload.video_source,
+                video_id: analysisPayload.video_id,
+                video_label: videoAnalysis?.video_label || selectedVideo?.label || null,
+                summary: analysisPayload.summary,
+                analysis_model: videoAnalysis?.analysis_model || null,
+                vitals_mode: "normal",
+              },
+            });
+            setIncidentId(incident.incident_id);
+            await updateIncidentStatus(incident.incident_id, {
+              state: "resolved",
+              summary: `Sentinel analyzed the video and detected no fall. ${analysisPayload.summary}`,
+            });
+          }
           setPhase("idle");
           return;
         }
@@ -790,6 +817,7 @@ export default function Dashboard({
             confidence_score: eventPayload.confidence_score,
             video_id: eventPayload.video_id,
             realtime_session_id: payload.session_id,
+            fall_detected: true,
           },
           videoMetadata: {
             source: eventPayload.video_source,

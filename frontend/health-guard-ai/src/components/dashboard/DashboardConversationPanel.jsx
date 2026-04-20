@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import notificationSound from "../../audio/notification-sound.mp3";
 
 const AUTO_NO_RESPONSE_SECONDS = 10;
 const AUTO_NO_RESPONSE_TRIGGER = "no_response_";
@@ -67,6 +68,8 @@ export default function DashboardConversationPanel({
   const streamEndRef = useRef(null);
   const noResponseTimerRef = useRef(null);
   const sendTurnRef = useRef(sendTurn);
+  const audioRef = useRef(null);
+  const assistantCountRef = useRef(messages.filter((m) => m.role === "assistant").length);
 
   const lastMessage = messages[messages.length - 1] || null;
   const lastAssistantMessageIndex = [...messages]
@@ -83,9 +86,11 @@ export default function DashboardConversationPanel({
     !isDispatchConfirmationPending &&
     !isDispatchCompleted &&
     phase !== "sending" &&
+    phase !== "idle" &&
+    phase !== "completed" &&
     !draftMessage.trim();
 
-  const recommendedReplies = phase === "sending"
+  const recommendedReplies = (phase === "sending" || phase === "idle")
     ? []
     : [
         ...(showPostReasoningReply ? ["What should I do now?"] : []),
@@ -99,6 +104,22 @@ export default function DashboardConversationPanel({
   useEffect(() => {
     sendTurnRef.current = sendTurn;
   }, [sendTurn]);
+
+  useEffect(() => {
+    if (!audioRef.current) {
+      audioRef.current = new Audio(notificationSound);
+    }
+  }, []);
+
+  useEffect(() => {
+    const currentAssistantCount = messages.filter((m) => m.role === "assistant" && m.text?.trim()).length;
+    if (currentAssistantCount > assistantCountRef.current) {
+      audioRef.current?.play().catch((err) => {
+        console.warn("Audio playback failed:", err);
+      });
+    }
+    assistantCountRef.current = currentAssistantCount;
+  }, [messages]);
 
   useEffect(() => {
     const previousStatus = previousReasoningStatusRef.current;
@@ -244,8 +265,14 @@ export default function DashboardConversationPanel({
                 }
               }
             }}
-            placeholder={isReasoningActive ? "The agent is reasoning. Please wait..." : "Type your response"}
-            disabled={isReasoningActive}
+            placeholder={
+              phase === "idle"
+                ? "Start a session to interact"
+                : isReasoningActive
+                ? "The agent is reasoning. Please wait..."
+                : "Type your response"
+            }
+            disabled={isReasoningActive || phase === "idle"}
           />
         </div>
 
@@ -260,9 +287,9 @@ export default function DashboardConversationPanel({
               sendTurn();
             }
           }}
-          disabled={!draftMessage.trim() || phase === "sending" || !latestTurn || isReasoningActive}
+          disabled={!draftMessage.trim() || phase === "sending" || !latestTurn || isReasoningActive || phase === "idle"}
         >
-          {isReasoningActive ? "Reasoning..." : phase === "sending" ? "Waiting for agent..." : "Send"}
+          {isReasoningActive ? "Reasoning..." : phase === "sending" ? "Waiting for agent..." : phase === "idle" ? "Session Stopped" : "Send"}
         </button>
       </div>
     </div>

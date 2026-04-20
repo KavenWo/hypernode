@@ -4,3 +4,5 @@ __pycache__
 .uv-cache
 .git
 *.pyc
+.env
+.env.*

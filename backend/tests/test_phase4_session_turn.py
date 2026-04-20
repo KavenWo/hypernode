@@ -23,8 +23,11 @@ from agents.shared.schemas import (  # noqa: E402
     ResponseActionItem,
     ResponsePlanSummary,
 )
-from agents.communication.session_agent import _apply_assessment_language_guardrails, analyze_communication_turn  # noqa: E402
-from agents.communication.session_agent import _summarize_reasoning_handoff  # noqa: E402
+from app.fall.adk_communication import (
+    _apply_assessment_language_guardrails,
+    analyze_communication_turn_with_adk as analyze_communication_turn,
+    _summarize_reasoning_handoff,
+)
 from app.fall.conversation_service import (  # noqa: E402
     _apply_execution_context_to_reply,
     _merge_assessment_into_analysis,

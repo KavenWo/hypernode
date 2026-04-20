@@ -152,6 +152,7 @@ class IncidentSummary(BaseModel):
     action_taken: str | None = None
     status: str
     summary: str
+    fall_detected: bool | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -619,6 +620,7 @@ def list_incident_summaries(
                 action_taken=incident.final_action,
                 status=incident.status.value,
                 summary=_generate_incident_summary(incident),
+                fall_detected=incident.simulation_trigger.get("fall_detected") if incident.simulation_trigger else None,
                 created_at=incident.triggered_at,
             )
 
@@ -638,6 +640,7 @@ def list_incident_summaries(
             action_taken=incident.final_action,
             status=incident.status.value,
             summary=_generate_incident_summary(incident),
+            fall_detected=incident.simulation_trigger.get("fall_detected") if incident.simulation_trigger else None,
             created_at=incident.triggered_at,
         )
 
