@@ -1,93 +1,187 @@
-# [Project Name Placeholder]
+# 🚑 ElderGuard — Intelligent Emergency Fall Response System
 
-**Advancing Healthcare through Agentic AI for Malaysia's "Golden Hour"**
+## 🔗 Project Links
 
-An autonomous, life-saving AI platform engineered for **Track 3: Vital Signs (Healthcare & Wellbeing)** of the Project 2030 MyAI Future Hackathon.
+* **Live Demo**: [https://elder-guard-web-848039689147.us-central1.run.app](https://elder-guard-web-848039689147.us-central1.run.app)
+* **Demo Video**: [Link to YouTube/Google Drive placeholder]
+* **Submission Slides**: [Link to Google Slides placeholder]
 
-## 🚀 The Challenge & Our Solution
-
-### The National Problem
-As Malaysia transitions toward an "Aged Society," the public healthcare system—particularly emergency response—faces unprecedented strain. During critical events like sudden cardiac arrest or severe stroke, survival hinges on the "Golden Hour". Delays in symptom detection, chaotic bystander responses, and slow emergency dispatches cost lives.
-
-### Our Solution
-[Project Name] is a sovereign healthcare ecosystem designed to move beyond passive monitoring into **Autonomous Execution**. Harnessing the **Google AI Ecosystem Stack**, our platform automatically detects vital anomalies, triggers agentic workflows to orchestrate emergency services, sends patient profiles and precise GPS routing to nearby hospitals, and delivers localized First Aid guidance directly to bystanders—all in real-time.
+> The system is fully deployed on Google Cloud Run. Local setup is optional for evaluation.
 
 ---
 
-## 🌟 Key Features
+## 🧠 Overview
 
-1. **Multimodal Medical Onboarding Dashboard:** 
-   * Leverages **Gemini 2.0 Multimodal Capabilities** to instantly ingest medical history via documents, voice descriptions, or video uploads. Identifies key risk factors (e.g., past heart attacks) securely into a NoSQL Firebase database.
-2. **Proactive Wearable & Environmental Monitoring:** 
-   * Continuously retrieves heartbeat and blood pressure data from smartwatches.
-   * **Vision-based Fall Detection:** Uses Gemini 2.0 Multimodal capabilities to analyze live camera feeds/video clips for behavioral anomalies like falls, providing immediate context for the medical cause.
-3. **Autonomous Emergency Coordinator (Agentic Flow):** 
-   * When an emergency is validated, the system triggers agentic workflows using **Firebase Genkit** and **Vertex AI Agent Builder**.
-   * **User Safety Override:** Includes a "Cancel Emergency" button with a timeout period, allowing users to stop all autonomous actions in case of misjudgment or false alarms.
-4. **Real-world Interventions (APIs):**
-   * **Twilio API:** Instantly places synthesized VoIP voice calls to emergency contacts and local EMS, stating precise coordinates and patient conditions.
-   * **Google Maps API:** Calculates routing to the nearest healthcare facility, automatically dispatching the patient's critical Firebase profile to that hospital's receiving endpoint.
-5. **Contextual Bystander Guidance:**
-   * Utilizes **Vertex AI Search (RAG)** grounded in national medical datasets to provide accurate, real-time CPR or medication-administration instructions to nearby caregivers via audio output.
+**ElderGuard** is an AI-powered emergency response system designed to detect falls, understand real-world situations, and execute appropriate actions in real time.
+
+Unlike traditional fall detection systems that only alert, ElderGuard:
+
+* Communicates with patients or bystanders
+* Performs intelligent reasoning
+* Guides emergency response (e.g. CPR)
+* Executes critical actions such as dispatch and notifications
 
 ---
 
-## 🛠 Technology Stack & Google AI Ecosystem
+## ❗ Problem
 
-We have strictly adhered to the "Build With AI" mandate to transition from Chat to Action.
+Falls among elderly individuals are a major healthcare concern, especially in home environments where immediate assistance is unavailable.
 
-### 🧠 The Intelligence (Brain)
-*   **Gemini 2.0 Flash:** For high-speed, low-latency parsing of continuous wearable data streams.
-*   **Gemini 2.0 Pro:** For complex clinical reasoning when a vital anomaly crosses critical thresholds, utilizing the patient's historical medical profile to avoid false positives and make dispatch decisions.
+Delayed response can lead to:
 
-### ⚙️ The Orchestrator
-*   **Vertex AI Agent Builder:** To construct specialized agents (e.g., Dispatch Agent, Reasoning Agent).
-*   **Firebase Genkit:** Acts as the backend backbone managing the multi-step Agentic AI workflow sequence. Integrates seamlessly with Twilio and Google Maps tools.
+* Severe injury
+* Long-term complications
+* Increased mortality risk
 
-### 📚 The Context
-*   **Vertex AI Search (RAG):** Grounded using national Malaysian healthcare guidelines to retrieve accurate First Aid protocols for bystander instruction.
+Existing systems lack:
 
-### 💻 The Development Lifecycle & Infrastructure
-*   **Frontend:** React (Dashboard & UI)
-*   **Backend:** Python via FastAPI
-*   **Database:** Firebase NoSQL
-*   **Deployment:** Google Cloud Workstations for coding, serverless deployment on Google Cloud Run.
+* Real-time understanding
+* Decision-making capability
+* Guided intervention
 
 ---
 
-## 🚀 Getting Started
+## 💡 Solution
 
-### Prerequisites
-* Node.js (v18+)
-* Python (3.10+)
-* Google Cloud Platform Account (Vertex AI, Cloud Run)
-* Firebase Project Configuration
-* Twilio & Google Maps API Keys
+ElderGuard provides an end-to-end intelligent response system:
 
-### Installation
+1. Detects fall using vision AI
+2. Initiates communication with patient or bystander
+3. Collects structured medical signals
+4. Uses AI reasoning to assess severity
+5. Executes appropriate emergency actions
 
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/your-repo/project-name.git
-   cd project-name
-   ```
+---
 
-2. **Frontend Setup (React):**
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
+## ⚙️ Key Features
 
-3. **Backend Setup (Python/FastAPI):**
-   ```powershell
-   cd backend
-   uv sync
-   uv run uvicorn app.main:app --reload
-   ```
+* Fall detection from video input
+* Real-time communication with patient or bystander
+* AI-driven reasoning for severity assessment
+* CPR guidance system (step-by-step)
+* Emergency dispatch simulation
+* Family notification system
+* Controlled multi-agent workflow for reliability
+* Dashboard for monitoring and interaction
 
-4. **Environment Variables:**
-   Create a `.env` file in the backend directory and populate `GEMINI_API_KEY`. The backend also accepts the older `GOOGLE_GENAI_API_KEY` name for backward compatibility.
+---
 
-## 📜 License
-This project is open-source and submitted for the MyAI Future Hackathon 2026.
+## 🧠 System Architecture
+
+ElderGuard is built using a multi-agent architecture:
+
+### Core Agents
+
+* **Sentinel Agent** — Detects fall events from video input
+* **Communication Agent** — Handles structured interaction with patient or bystander
+* **Reasoning Agent** — Performs AI-based decision making using medical context
+* **Execution Agent** — Executes deterministic actions such as dispatch and guidance
+
+---
+
+### Supporting Technologies
+
+* Vertex AI Agent Development Kit (ADK)
+* Gemini 2.5 Flash and Gemini 2.5 Pro
+* Vertex AI Search for grounded knowledge
+* Google Cloud Run for deployment
+
+---
+
+## 🔁 System Flow
+
+1. Fall detected via video
+2. System initiates communication
+3. Collects patient or bystander input
+4. AI evaluates situation using reasoning
+5. System executes appropriate action:
+
+   * CPR guidance
+   * Emergency dispatch
+   * Family notification
+
+---
+
+## 🚀 Setup Instructions
+
+For a detailed guide on how to configure and run each component, please refer to the specific README files in the subdirectories:
+
+### Backend (FastAPI + Agentic Runtime)
+Located in [`/backend`]
+* Uses `uv` for dependency management
+* Requires Google Cloud credentials for Vertex AI
+* Handles the reasoning and execution logic
+
+### Frontend (React + Vite)
+Located in [`/frontend/health-guard-ai`]
+* Built with React and Framer Motion
+* Connects to the backend via REST API
+* Real-time dashboard for monitoring fall events
+
+---
+
+## ☁️ Deployment
+
+The system is deployed on Google Cloud Run for scalable and serverless execution.
+
+---
+
+## 🤖 AI Usage Disclosure
+
+This project uses the Google AI Ecosystem Stack as part of its core system:
+
+* Google AI Studio or Antigravity was used as the starting point for development and prototyping
+* Gemini models (2.5 Flash and 2.5 Pro) are used for system intelligence, interaction, and reasoning
+* Vertex AI (Agent Development Kit and Vertex AI Search) is used for orchestration and grounded knowledge retrieval
+* Google Cloud Run is used for deployment
+
+Additional AI-assisted tools may have been used to support development efficiency such as code suggestions, debugging, or refactoring.
+
+All generated or assisted code has been reviewed, validated, and understood by the team, and can be fully explained during judging.
+
+---
+
+## 🇲🇾 Impact & Alignment
+
+ElderGuard aligns with Malaysia’s Healthcare and Wellbeing track by:
+
+* Improving emergency response time
+* Supporting elderly care in home environments
+* Reducing strain on healthcare systems
+* Enabling safer, AI-assisted living environments
+
+It also contributes to Smart Cities through intelligent home monitoring and has potential integration with public emergency systems.
+
+---
+
+## 🧩 Future Improvements
+
+* Integration with real emergency services
+* Wearable device compatibility
+* Expanded medical scenario handling
+* Enhanced multimodal detection
+
+---
+
+## 🛠️ Development Timeline
+
+This project was developed during the Project 2030: MyAI Future Hackathon period (15 March 2026 – 21 April 2026), in accordance with competition rules.
+
+---
+
+## 👥 Team
+
+* KAVEN WONG XIEN HEAN — Agentic System Architecture & Development
+* LOH ZHI FONG — Frontend Engineering
+* LEE POH SIANG — Backend Systems Support
+* JAZMYN WONG YUIT WEN — Research & Vertex AI Integration
+
+---
+
+## 📌 Final Note
+
+From detection to decision to action, ElderGuard demonstrates how AI can move beyond passive monitoring into active, intelligent intervention.
+
+---
+
+*Developed by the **Hypernode Team** for Project 2030 (2026).*
