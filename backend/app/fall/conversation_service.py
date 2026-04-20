@@ -9,7 +9,6 @@ from typing import Optional
 
 from fastapi import BackgroundTasks
 
-from agents.shared.config import get_genai_client
 from app.fall.action_runtime_service import (
     apply_session_action_decision,
     request_contact_family_action,
@@ -18,7 +17,7 @@ from app.fall.action_runtime_service import (
     sync_action_state_with_assessment,
     sync_dispatch_confirmation_task,
 )
-from app.fall.agent_runtime import get_fall_agent_runtime, role_uses_shared_genai_client
+from app.fall.agent_runtime import get_fall_agent_runtime
 from app.fall.assessment_service import build_interaction_summary, load_user_profile, run_reasoning_assessment
 from app.fall.contracts import (
     CommunicationAgentAnalysis,
@@ -1784,17 +1783,9 @@ async def run_fall_conversation_turn(
         session.session_id
     )
 
-    client = None
-    if role_uses_shared_genai_client("communication"):
-        try:
-            client = get_genai_client()
-        except RuntimeError:
-            client = None
-
     patient_profile = load_user_profile(request.event.user_id)
     runtime = get_fall_agent_runtime()
     analysis = await runtime.analyze_communication_turn(
-        client=client,
         event=request.event,
         vitals=request.vitals,
         patient_profile=patient_profile,

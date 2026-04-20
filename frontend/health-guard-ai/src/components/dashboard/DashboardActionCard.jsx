@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Phone, Ambulance, X, AlertCircle } from "lucide-react";
+import { Activity, Phone, Ambulance, X, AlertCircle, MessageSquare } from "lucide-react";
+import dispatchNotificationSound from "../../audio/dispatch-notification-sound.mp3";
+
 
 const DISPATCH_CONFIRMATION_WINDOW_SECONDS = 15;
 
@@ -34,9 +36,17 @@ function renderStatusTagLabel(status) {
   return "Idle";
 }
 
-function NotificationBlock({ title, status, detail, message, occurrenceCount }) {
+function renderDispatchMessageStatus({ isDispatchCompleted, isDispatchPending, dispatchState, dispatchUpdate }) {
+  if (isDispatchCompleted) return "Sent";
+  if (isDispatchPending) return "Pending";
+  if (dispatchUpdate?.status === "cancelled" || dispatchState?.status === "cancelled") return "Cancelled";
+  return "Ready";
+}
+
+function NotificationBlock({ title, status, detail, message, occurrenceCount, onClick }) {
   return (
     <div
+      onClick={onClick}
       style={{
         marginTop: 12,
         padding: "10px 12px",
@@ -46,6 +56,20 @@ function NotificationBlock({ title, status, detail, message, occurrenceCount }) 
         fontSize: 11,
         color: "var(--text-sub)",
         lineHeight: 1.6,
+        cursor: onClick ? "pointer" : "default",
+        transition: "border-color 0.2s ease, background 0.2s ease",
+      }}
+      onMouseEnter={(e) => {
+        if (onClick) {
+          e.currentTarget.style.borderColor = "var(--green)";
+          e.currentTarget.style.background = "var(--green-subtle)";
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (onClick) {
+          e.currentTarget.style.borderColor = "var(--border)";
+          e.currentTarget.style.background = "var(--surface)";
+        }
       }}
     >
       <div
@@ -64,12 +88,107 @@ function NotificationBlock({ title, status, detail, message, occurrenceCount }) 
         <span className="tag">{status}</span>
       </div>
       {detail && <div style={{ marginBottom: message ? 6 : 0 }}>{detail}</div>}
-      {message && <div>{message}</div>}
+      {message && onClick && (
+        <div style={{ marginTop: 8, color: "var(--brand)", fontSize: 10, fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}>
+           <MessageSquare size={12} /> Click to view message payload
+        </div>
+      )}
+      {message && !onClick && <div>{message}</div>}
       {occurrenceCount > 1 && (
         <div style={{ marginTop: 6, color: "var(--text-muted)" }}>
           Sent #{occurrenceCount}
         </div>
       )}
+    </div>
+  );
+}
+
+function MessagePreviewModal({ payload, onClose }) {
+  if (!payload) return null;
+
+  const isSMS = payload.type === 'sms';
+
+  return (
+    <div className="modal-overlay">
+      <div 
+        className="modal" 
+        style={{ 
+          maxWidth: 420, 
+          padding: 0, 
+          overflow: "hidden", 
+          background: isSMS ? "#fff" : "var(--surface)", 
+          boxShadow: "0 24px 48px rgba(0,0,0,0.15)",
+          borderRadius: 24,
+          border: "none"
+        }}
+      >
+        <div style={{ 
+          padding: "16px 20px", 
+          background: isSMS ? "#f9f9f9" : "var(--surface2)",
+          borderBottom: "1px solid var(--border)", 
+          display: "flex", 
+          alignItems: "center", 
+          justifyContent: "space-between" 
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {isSMS ? <Phone size={16} color="var(--green)" /> : <Ambulance size={16} color="var(--red)" />}
+            <div>
+              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, fontFamily: "Outfit, sans-serif", color: "var(--text)" }}>{payload.title}</h2>
+              <div style={{ fontSize: 10, color: "var(--text-sub)", marginTop: 2, fontWeight: 500 }}>
+                {isSMS ? 'iMessage • Now' : 'Secure Dispatch Channel • Automated Voice'}
+              </div>
+            </div>
+          </div>
+          <button style={{ 
+              background: "rgba(0,0,0,0.05)", border: "none", color: "var(--text-sub)", 
+              width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", 
+              justifyContent: "center", cursor: "pointer", transition: "all 0.2s" 
+            }}
+            onClick={onClose}
+          >
+            <X size={14} />
+          </button>
+        </div>
+        
+        {isSMS ? (
+          <div style={{ padding: "24px 20px 32px", background: "#fff", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", textAlign: "center", marginBottom: 8 }}>Today, {new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+            <div style={{ 
+                background: "#007AFF", 
+                color: "#fff", 
+                padding: "12px 16px", 
+                borderRadius: "18px 18px 4px 18px", 
+                fontSize: 13, 
+                lineHeight: 1.5,
+                alignSelf: "flex-end",
+                maxWidth: "85%",
+                boxShadow: "0 2px 4px rgba(0,122,255,0.2)"
+              }}>
+              {payload.message}
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: "24px", background: "#0f172a", color: "#f8fafc" }}>
+            <div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 12, fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: 6 }}>
+              <div className="live-dot" style={{ background: "var(--red)" }}></div> Recording Transcript
+            </div>
+            <div style={{
+              background: "#1e293b",
+              border: "1px solid #334155",
+              borderRadius: 12,
+              padding: 16,
+              fontFamily: "var(--font-mono)",
+              fontSize: 12,
+              color: "#e2e8f0",
+              lineHeight: 1.6,
+              whiteSpace: "pre-wrap",
+              borderLeft: "3px solid var(--red)"
+            }}>
+              {payload.message}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -86,6 +205,11 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
   const familyReminderUpdates = findExecutionUpdates(latestTurn, "family_fall_reminder");
   const latestFamilyReminder = familyReminderUpdates.at(-1) || null;
   const dispatchUpdate = findExecutionUpdate(latestTurn, "emergency_dispatch");
+  const dispatchMessage =
+    buildMessageText(dispatchUpdate) ||
+    dispatchState?.message_text ||
+    dispatchState?.script_lines?.join(" ") ||
+    "";
   const dispatchStatusValue = canonicalExecution?.dispatch_status;
   const guidanceActive = canonicalExecution?.phase === "guidance";
   const hasAssessment = Boolean(latestAssessment || reasoningDecision);
@@ -136,8 +260,17 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
   const [localCountdown, setLocalCountdown] = useState(null);
   const [pendingDecision, setPendingDecision] = useState("");
   const [decisionFeedback, setDecisionFeedback] = useState("");
+  const [selectedMessagePayload, setSelectedMessagePayload] = useState(null);
   const autoTriggeredRef = useRef(false);
   const pendingWindowKeyRef = useRef("");
+  const audioRef = useRef(null);
+
+  useEffect(() => {
+    if (!audioRef.current) {
+      audioRef.current = new Audio(dispatchNotificationSound);
+    }
+  }, []);
+
 
   useEffect(() => {
     if (!isDispatchPending) {
@@ -162,7 +295,9 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
       setPendingDecision("");
       setDecisionFeedback("");
       autoTriggeredRef.current = false;
+      audioRef.current?.play().catch((err) => console.warn("Audio playback failed:", err));
     }
+
 
     const timer = window.setInterval(() => {
       setLocalCountdown((currentValue) => {
@@ -171,10 +306,12 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
           window.clearInterval(timer);
           if (!autoTriggeredRef.current && !pendingDecision) {
             autoTriggeredRef.current = true;
-            setPendingDecision("confirm");
+            setPendingDecision("auto_confirm");
             setDecisionFeedback("No response detected. Dispatching automatically...");
-            void Promise.resolve(onActionDecision?.("emergency_dispatch", "confirm"))
+            void Promise.resolve(onActionDecision?.("emergency_dispatch", "auto_confirm"))
               .catch(() => {
+
+
                 autoTriggeredRef.current = false;
                 setPendingDecision("");
                 setDecisionFeedback("Automatic dispatch failed. Please try again.");
@@ -192,7 +329,11 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
   useEffect(() => {
     if (isDispatchCompleted) {
       setPendingDecision("");
-      setDecisionFeedback("Dispatch confirmed.");
+      setDecisionFeedback(
+        dispatchStatusValue === "auto_dispatched"
+          ? "Dispatch executed automatically."
+          : "Dispatch confirmed."
+      );
       autoTriggeredRef.current = false;
       return;
     }
@@ -221,6 +362,8 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
 
     try {
       await onActionDecision("emergency_dispatch", decision);
+
+
     } catch {
       setDecisionFeedback(decision === "confirm" ? "Failed to confirm dispatch." : "Failed to cancel dispatch.");
       setPendingDecision("");
@@ -236,7 +379,7 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
 
       {!hasAssessment && (
         <p style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: 16 }}>
-          Response actions will update visually once the reasoning policy engages.
+          Response actions will update visually.
         </p>
       )}
 
@@ -279,6 +422,15 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
               detail={latestFamilyAlert?.detail || familyState?.detail || "Primary family notification for support escalation."}
               message={buildMessageText(latestFamilyAlert) || (!familyInitialSent && familyIsPlanned ? familyMessage : "")}
               occurrenceCount={latestFamilyAlert?.occurrence_count || familyState?.occurrence_count || 1}
+              onClick={
+                (buildMessageText(latestFamilyAlert) || (!familyInitialSent && familyIsPlanned ? familyMessage : ""))
+                  ? () => setSelectedMessagePayload({
+                      title: "Initial Family Alert",
+                      message: buildMessageText(latestFamilyAlert) || familyMessage,
+                      type: 'sms'
+                    })
+                  : undefined
+              }
             />
           )}
           {(familyUpdateSent || latestFamilyReminder) && (
@@ -288,6 +440,15 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
               detail={latestFamilyReminder?.detail || "Latest follow-up family update generated by the execution lane."}
               message={buildMessageText(latestFamilyReminder)}
               occurrenceCount={latestFamilyReminder?.occurrence_count || familyReminderUpdates.length || 1}
+              onClick={
+                buildMessageText(latestFamilyReminder)
+                  ? () => setSelectedMessagePayload({
+                      title: "Follow-up Family Update",
+                      message: buildMessageText(latestFamilyReminder),
+                      type: 'sms'
+                    })
+                  : undefined
+              }
             />
           )}
         </div>
@@ -307,6 +468,12 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
               </div>
             )}
           </div>
+
+          {dispatchStatus === "idle" && (
+            <div style={{ fontSize: 10, color: "var(--text-sub)", lineHeight: 1.6 }}>
+              Emergency dispatch and coordination services will be activated if life-threatening conditions or critical vitals are detected.
+            </div>
+          )}
 
           {/* Suspected Emergency Explanation Box */}
           {(isDispatchPending || dispatchRecommended || guidanceActive) && !isDispatchCompleted && (
@@ -360,34 +527,28 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
             </div>
           )}
 
-          {/* Post-Dispatch Clean Message */}
           {isDispatchCompleted && (
-            <div style={{ fontSize: 10, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: dispatchUpdate?.message_text ? 12 : 0 }}>
-              Emergency dispatch has been successfully executed and services are on route.
+            <div style={{ fontSize: 10, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: dispatchMessage ? 12 : 0 }}>
+              {dispatchUpdate?.detail || dispatchState?.detail || "Emergency dispatch has been successfully executed and services are on route."}
             </div>
           )}
 
-          {isDispatchCompleted && dispatchUpdate?.message_text && (
-            <div style={{
-              marginTop: 12,
-              padding: "12px",
-              borderRadius: 10,
-              background: "var(--surface2)",
-              border: "1px solid var(--border)",
-              fontSize: 10,
-              color: "var(--text-sub)",
-              lineHeight: 1.6,
-            }}>
-              <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 8 }}>
-                Emergency Alert Message
-              </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 8, background: "var(--surface)", padding: 10, borderRadius: 6, border: "1px solid var(--border)" }}>
-                {dispatchUpdate.message_text}
-              </div>
-            </div>
+          {dispatchMessage && (
+            <NotificationBlock
+              title="Emergency Alert Message"
+              status={renderDispatchMessageStatus({ isDispatchCompleted, isDispatchPending, dispatchState, dispatchUpdate })}
+              detail={dispatchUpdate?.detail || dispatchState?.detail || "Dispatch payload prepared for emergency responders."}
+              message={dispatchMessage}
+              occurrenceCount={dispatchUpdate?.occurrence_count || dispatchState?.occurrence_count || 1}
+              onClick={() => setSelectedMessagePayload({ title: "Emergency Alert Message", message: dispatchMessage, type: "voice" })}
+            />
           )}
         </div>
       </div>
+      
+      {selectedMessagePayload && (
+        <MessagePreviewModal payload={selectedMessagePayload} onClose={() => setSelectedMessagePayload(null)} />
+      )}
     </div>
   );
 }

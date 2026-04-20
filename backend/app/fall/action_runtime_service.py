@@ -111,6 +111,57 @@ def _render_script_message(script_lines: list[str]) -> str:
     return " ".join(line.strip() for line in script_lines if line and line.strip()).strip()
 
 
+def _fallback_dispatch_script_lines(*, patient_profile) -> list[str]:
+    patient_name = patient_profile.full_name or patient_profile.user_id
+    location = getattr(patient_profile, "address", None) or "registered residence"
+    return [
+        f"CRITICAL ALERT: Emergency Medical Dispatch requested for Patient {patient_name} at {location}.",
+        "Patient is unresponsive following a confirmed fall event.",
+        "Autonomous escalation protocol initiated due to patient's inability to respond during the critical monitoring window.",
+        "Please dispatch ALS/BLS responders immediately. Secure live monitoring telemetry is active.",
+    ]
+
+
+def _resolve_dispatch_payload(
+    *,
+    dispatch_state: ActionStateSummary,
+    assessment: FallAssessment | None,
+    patient_answers: list[PatientAnswer] | None = None,
+    patient_profile=None,
+    execution_updates: list[ExecutionUpdate] | None = None,
+) -> tuple[list[str], str]:
+    script_lines = [line for line in (dispatch_state.script_lines or []) if line and line.strip()]
+    message_text = (dispatch_state.message_text or "").strip()
+
+    if not script_lines and execution_updates:
+        dispatch_update = next(
+            (item for item in reversed(execution_updates) if item.type == "emergency_dispatch"),
+            None,
+        )
+        if dispatch_update is not None:
+            script_lines = [line for line in (dispatch_update.script_lines or []) if line and line.strip()]
+            if not message_text:
+                message_text = (dispatch_update.message_text or "").strip()
+
+    if not script_lines and assessment is not None and patient_profile is not None:
+        script_lines = _dispatch_script_lines(
+            patient_profile=patient_profile,
+            assessment=assessment,
+            patient_answers=patient_answers or [],
+        )
+
+    if not script_lines and patient_profile is not None:
+        script_lines = _fallback_dispatch_script_lines(patient_profile=patient_profile)
+
+    if not message_text:
+        message_text = _render_script_message(script_lines)
+
+    if not script_lines and message_text:
+        script_lines = [message_text]
+
+    return script_lines, message_text
+
+
 def _build_family_notification_key(*, assessment: FallAssessment, family_script: list[str]) -> str:
     key_parts = [
         assessment.clinical_assessment.severity,
@@ -343,12 +394,23 @@ def request_emergency_dispatch_confirmation(
     dispatch_state = state_map["emergency_dispatch"]
     now = datetime.utcnow()
     deadline = now + timedelta(seconds=DISPATCH_CONFIRMATION_WINDOW_SECONDS)
+    patient_answers = _answers_from_conversation_history(session.conversation_history)
+    patient_profile = load_user_profile(session.event.user_id)
+    script_lines, message_text = _resolve_dispatch_payload(
+        dispatch_state=dispatch_state,
+        assessment=session.latest_assessment,
+        patient_answers=patient_answers,
+        patient_profile=patient_profile,
+        execution_updates=session.execution_updates,
+    )
     updated_state = dispatch_state.model_copy(
         update={
             "desired": True,
             "status": "pending_confirmation",
             "reason": reason,
             "detail": detail,
+            "message_text": message_text,
+            "script_lines": script_lines,
             "requires_confirmation": True,
             "confirmation_status": "pending",
             "countdown_seconds": DISPATCH_CONFIRMATION_WINDOW_SECONDS,
@@ -446,6 +508,16 @@ async def _execute_dispatch_action(session_id: str, *, confirmation_status: str)
     if dispatch_state.status in {"completed", "cancelled"}:
         return dispatch_state
 
+    patient_answers = _answers_from_conversation_history(session.conversation_history)
+    patient_profile = load_user_profile(session.event.user_id)
+    script_lines, message_text = _resolve_dispatch_payload(
+        dispatch_state=dispatch_state,
+        assessment=session.latest_assessment,
+        patient_answers=patient_answers,
+        patient_profile=patient_profile,
+        execution_updates=session.execution_updates,
+    )
+
     if session.latest_assessment is None:
         incident = get_incident_by_realtime_session_id(session_id)
         if incident is None:
@@ -462,7 +534,8 @@ async def _execute_dispatch_action(session_id: str, *, confirmation_status: str)
                 "desired": True,
                 "status": "completed",
                 "detail": completed_detail,
-                "message_text": dispatch_state.message_text,
+                "message_text": message_text,
+                "script_lines": script_lines,
                 "requires_confirmation": False,
                 "confirmation_status": confirmation_status,
                 "countdown_seconds": None,
@@ -502,8 +575,6 @@ async def _execute_dispatch_action(session_id: str, *, confirmation_status: str)
                 _sync_canonical_execution_snapshot(session_id, session=latest_session)
         return completed_state
 
-    patient_answers = _answers_from_conversation_history(session.conversation_history)
-    patient_profile = load_user_profile(session.event.user_id)
     incident_id = await trigger_emergency(
         patient_id=session.event.user_id,
         severity=_map_assessment_severity_to_dispatch(session.latest_assessment.clinical_assessment.severity),
@@ -526,7 +597,8 @@ async def _execute_dispatch_action(session_id: str, *, confirmation_status: str)
             "desired": True,
             "status": "completed",
             "detail": completed_detail,
-            "message_text": _render_script_message(dispatch_state.script_lines),
+            "message_text": message_text,
+            "script_lines": script_lines,
             "requires_confirmation": False,
             "confirmation_status": confirmation_status,
             "countdown_seconds": None,
@@ -887,20 +959,28 @@ async def apply_session_action_decision(
             }
         )
 
-        if decision == "confirm":
+        if decision in {"confirm", "auto_confirm"}:
             updated_incident = execute_incident_action_once(incident.incident_id, "call_ambulance")
+            confirmation_status = "confirmed" if decision == "confirm" else "auto_confirmed"
             action_message = (
-                updated_incident.action_taken.get("message")
-                if updated_incident.action_taken
-                else "Emergency dispatch was confirmed and executed."
+                "Emergency dispatch was confirmed and executed."
+                if confirmation_status == "confirmed"
+                else "Emergency dispatch was executed automatically after the 15-second confirmation window expired."
+            )
+            script_lines, message_text = _resolve_dispatch_payload(
+                dispatch_state=dispatch_state,
+                assessment=None,
+                execution_updates=execution_updates,
             )
             updated_state = dispatch_state.model_copy(
                 update={
                     "desired": True,
                     "status": "completed",
                     "detail": action_message,
+                    "message_text": message_text,
+                    "script_lines": script_lines,
                     "requires_confirmation": False,
-                    "confirmation_status": "confirmed",
+                    "confirmation_status": confirmation_status,
                     "countdown_seconds": None,
                     "confirmation_deadline": None,
                     "last_updated_at": datetime.utcnow(),
@@ -922,7 +1002,11 @@ async def apply_session_action_decision(
                 update={
                     "phase": "dispatch_triggered",
                     "countdown_seconds": None,
-                    "dispatch_status": DispatchStatus.CONFIRMED,
+                    "dispatch_status": (
+                        DispatchStatus.CONFIRMED
+                        if confirmation_status == "confirmed"
+                        else DispatchStatus.AUTO_DISPATCHED
+                    ),
                 }
             )
             canonical_communication_state = canonical_communication_state.model_copy(
@@ -1019,6 +1103,9 @@ async def apply_session_action_decision(
     if decision == "confirm":
         _cancel_dispatch_confirmation_task(session_id)
         updated_state = await _execute_dispatch_action(session_id, confirmation_status="confirmed")
+    elif decision == "auto_confirm":
+        _cancel_dispatch_confirmation_task(session_id)
+        updated_state = await _execute_dispatch_action(session_id, confirmation_status="auto_dispatched")
     elif decision == "cancel":
         _cancel_dispatch_confirmation_task(session_id)
         updated_state = dispatch_state.model_copy(

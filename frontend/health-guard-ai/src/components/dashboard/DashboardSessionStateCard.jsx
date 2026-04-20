@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { MessageSquare, Users, BrainCircuit, Zap, Shield } from "lucide-react";
 
 function formatScore(value) {
@@ -47,6 +48,23 @@ export default function DashboardSessionStateCard({
   historyCount,
   phase,
 }) {
+  const [commMessageIdx, setCommMessageIdx] = useState(0);
+  const [reasoningMessageIdx, setReasoningMessageIdx] = useState(0);
+
+  const commMessages = [
+    "Interpreting dialogue context...",
+    "Drafting response..."
+  ];
+
+  const reasoningMessages = [
+    "Synthesizing clinical indicators and telemetry...",
+    "Retrieving medical protocol grounding from Vertex...",
+    "Analyzing situational risk factors and environmental context...",
+    "Evaluating historical medical profiles for risk correlation...",
+    "Optimizing prioritized clinical response guidance...",
+    "Finalizing comprehensive clinical assessment..."
+  ];
+
   const canonicalState = latestTurn?.state;
   const canonicalCommunication = latestTurn?.canonical_communication_state;
   const canonicalExecution = latestTurn?.execution_state;
@@ -158,6 +176,26 @@ export default function DashboardSessionStateCard({
     reasoningStatus = "pending";
     reasoningStatusText = "Failed";
   }
+
+  useEffect(() => {
+    if (!isCommRunning) {
+      setCommMessageIdx(0);
+      return;
+    }
+    const timer = setTimeout(() => setCommMessageIdx(1), 3000);
+    return () => clearTimeout(timer);
+  }, [isCommRunning]);
+
+  useEffect(() => {
+    if (reasoningStatus !== "pending") {
+      setReasoningMessageIdx(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setReasoningMessageIdx(prev => (prev + 1) % reasoningMessages.length);
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [reasoningStatus]);
 
   // Execution Agent Logic
   const executionUpdates = latestTurn?.execution_updates || [];
@@ -342,7 +380,7 @@ export default function DashboardSessionStateCard({
             <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 10, padding: "2px 4px" }}>
               <div className="typing-dots amber"><span></span><span></span><span></span></div>
               <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 500, letterSpacing: "0.01em" }}>
-                Interpreting dialogue & drafting response...
+                {commMessages[commMessageIdx]}
               </div>
             </div>
           )}
@@ -392,9 +430,14 @@ export default function DashboardSessionStateCard({
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 700 }}>Reasoning Agent</div>
-                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
-                  Gemini 2.5 Pro
-                </span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                    Gemini 2.5 PRO
+                  </span>
+                  <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)", color: groundingRequired ? "var(--brand)" : "inherit" }}>
+                    Vertex AI Search
+                  </span>
+                </div>
               </div>
               <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
                 Evaluates clinical severity, vitals, and situational context to determine interventions.
@@ -413,7 +456,7 @@ export default function DashboardSessionStateCard({
               <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 4px", marginBottom: 8 }}>
                 <div className="typing-dots amber"><span></span><span></span><span></span></div>
                 <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 500, letterSpacing: "0.01em" }}>
-                  Synthesizing clinical assessment...
+                   {reasoningMessages[reasoningMessageIdx]}
                 </div>
               </div>
               {latestAssessment?.clinical_assessment?.red_flags?.length > 0 && (
@@ -519,18 +562,23 @@ export default function DashboardSessionStateCard({
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 700 }}>Execution Agent</div>
-                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
-                  Gemini 2.5 Flash
-                </span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
+                    Gemini 2.5 Flash
+                  </span>
+                  <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)", color: groundingRequired ? "var(--brand)" : "inherit" }}>
+                    Vertex AI Search
+                  </span>
+                </div>
               </div>
               <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
                 Generates clinical instructions and manages automated response triggers.
               </div>
             </div>
           </div>
-          <div className={`agent-status-tag ${executionStatus}`}>
-            {executionStatusText}
-          </div>
+            <div className={`agent-status-tag ${executionStatus}`}>
+              {executionStatusText}
+            </div>
         </div>
 
         <div className="agent-content">
@@ -588,94 +636,6 @@ export default function DashboardSessionStateCard({
         </div>
       </div>
 
-
-      {/* Bystander Agent (Retrieval Engine) */}
-      <div className="agent-card">
-        <div className="agent-header" style={{ alignItems: "flex-start" }}>
-          <div className="agent-title-group">
-            <div className={`agent-icon-box ${bystanderStatus} ${groundingStatus === "pending" ? "pulsing" : ""}`} style={{ marginTop: 2 }}>
-              <div style={{ width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Users size={18} strokeWidth={2.2} />
-              </div>
-            </div>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 700 }}>Bystander Agent</div>
-                <span style={{ fontSize: 8, fontWeight: 700, opacity: 0.5, textTransform: "uppercase", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4, letterSpacing: "0.2px", border: "1px solid var(--border)" }}>
-                  Vertex AI Search
-                </span>
-              </div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)", fontWeight: 400, marginTop: 2 }}>
-                Retrieves grounded clinical protocols from validated medical handbooks.
-              </div>
-            </div>
-          </div>
-          <div className={`agent-status-tag ${bystanderStatus}`}>
-            {bystanderStatusText}
-          </div>
-        </div>
-
-        <div className="agent-content">
-          {(latestTurn || grounding) && (
-            <div
-              style={{
-                marginTop: 14,
-                padding: "12px 14px",
-                borderRadius: 12,
-                background: "var(--surface2)",
-                border: "1px solid var(--border)",
-                fontSize: 10,
-                color: "var(--text-sub)",
-                lineHeight: 1.6,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)" }}>
-                  Grounded Intelligence
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  {protocolReady && (
-                    <span style={{ fontSize: 9, fontWeight: 700, color: "var(--green)", textTransform: "uppercase", background: "var(--green-subtle)", padding: "2px 6px", borderRadius: 4 }}>
-                      Verified Source
-                    </span>
-                  )}
-                  {groundingRequired && (
-                    <span style={{
-                      fontSize: 9,
-                      fontWeight: 700,
-                      textTransform: "uppercase",
-                      padding: "2px 6px",
-                      borderRadius: 4,
-                      background: protocolReady ? "var(--green-subtle)" : "var(--surface3)",
-                      color: protocolReady ? "var(--green)" : "var(--text-muted)"
-                    }}>
-                      {toTitleCase(groundingStatus.replace('_', ' '))}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: 10 }}>
-                {bystanderActivity}
-              </div>
-
-
-              {grounding?.queries?.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-                  <div style={{ fontSize: 9, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    Active Search Queries:
-                  </div>
-                  {grounding.queries.slice(0, 2).map((q, i) => (
-                    <div key={i} style={{ fontSize: 11, color: "var(--text-sub)", fontStyle: "italic", borderLeft: "2px solid var(--border)", paddingLeft: 8 }}>
-                      "{q}"
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
 
 
     </div>

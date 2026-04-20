@@ -154,16 +154,19 @@ export default function DashboardConversationPanel({
       window.clearInterval(noResponseTimerRef.current);
     }
 
+    let secondsLeft = AUTO_NO_RESPONSE_SECONDS;
+
     noResponseTimerRef.current = window.setInterval(() => {
-      setAutoNoResponseCountdown((current) => {
-        if (current <= 1) {
+      secondsLeft -= 1;
+      setAutoNoResponseCountdown(secondsLeft);
+
+      if (secondsLeft <= 0) {
+        if (noResponseTimerRef.current) {
           window.clearInterval(noResponseTimerRef.current);
           noResponseTimerRef.current = null;
-          sendTurnRef.current(AUTO_NO_RESPONSE_TRIGGER);
-          return 0;
         }
-        return current - 1;
-      });
+        sendTurnRef.current(AUTO_NO_RESPONSE_TRIGGER);
+      }
     }, 1000);
 
     return () => {

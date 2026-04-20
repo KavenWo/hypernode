@@ -378,7 +378,6 @@ def _build_dispatch_ai_summary(
 
 async def _run_clinical_state_stage(
     *,
-    client,
     event: FallEvent,
     vitals: VitalSigns | None,
     patient_profile: UserMedicalProfile,
@@ -388,7 +387,6 @@ async def _run_clinical_state_stage(
     vision_assessment = await runtime.inspect_fall_event(event)
     vital_assessment = await runtime.inspect_vitals(vitals)
     clinical_assessment = await runtime.assess_clinical_severity(
-        client=client,
         event=event,
         patient_profile=patient_profile,
         vision_assessment=vision_assessment,
@@ -780,8 +778,6 @@ async def run_reasoning_assessment(
         event.confidence_score,
         len(patient_answers or []),
     )
-    client = None
-
     patient_profile = load_user_profile(event.user_id)
     answers = _canonical_reasoning_answers(
         patient_answers=patient_answers or [],
@@ -800,7 +796,6 @@ async def run_reasoning_assessment(
 
     # Step A + B: Clinical state assessment (1 Gemini Pro call)
     vision_assessment, vital_assessment, clinical_assessment = await _run_clinical_state_stage(
-        client=client,
         event=event,
         vitals=vitals,
         patient_profile=patient_profile,
@@ -828,7 +823,6 @@ async def run_reasoning_assessment(
             ", ".join(reasoning_support_result["selected_intents"][:3]) or "none",
         )
         clinical_assessment = await get_fall_agent_runtime().assess_clinical_severity(
-            client=client,
             event=event,
             patient_profile=patient_profile,
             vision_assessment=vision_assessment,

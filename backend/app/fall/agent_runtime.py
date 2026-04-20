@@ -20,7 +20,6 @@ class FallAgentRuntime(Protocol):
     async def assess_clinical_severity(
         self,
         *,
-        client,
         event,
         patient_profile,
         vision_assessment,
@@ -32,7 +31,6 @@ class FallAgentRuntime(Protocol):
     async def analyze_communication_turn(
         self,
         *,
-        client,
         event,
         vitals,
         patient_profile,
@@ -75,7 +73,6 @@ class ConsolidatedFallAgentRuntime:
     async def assess_clinical_severity(
         self,
         *,
-        client,
         event,
         patient_profile,
         vision_assessment,
@@ -98,7 +95,6 @@ class ConsolidatedFallAgentRuntime:
     async def analyze_communication_turn(
         self,
         *,
-        client,
         event,
         vitals,
         patient_profile,
