@@ -179,7 +179,7 @@ export default function DashboardConversationPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      <div className="card-title" style={{ margin: "20px 20px 10px" }}>Conversation Loop</div>
+      <div className="card-title" style={{ margin: "20px 20px 10px" }}>Conversation Panel</div>
 
       {messages.length === 0 && (
         <div className="empty-state" style={{ minHeight: 140, marginBottom: 14 }}>

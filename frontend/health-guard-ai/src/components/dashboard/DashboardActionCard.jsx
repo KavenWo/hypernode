@@ -265,6 +265,16 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
   const pendingWindowKeyRef = useRef("");
   const audioRef = useRef(null);
 
+  const onActionDecisionRef = useRef(onActionDecision);
+  useEffect(() => {
+    onActionDecisionRef.current = onActionDecision;
+  }, [onActionDecision]);
+
+  const pendingDecisionRef = useRef(pendingDecision);
+  useEffect(() => {
+    pendingDecisionRef.current = pendingDecision;
+  }, [pendingDecision]);
+
   useEffect(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio(dispatchNotificationSound);
@@ -297,21 +307,24 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
       autoTriggeredRef.current = false;
       audioRef.current?.play().catch((err) => console.warn("Audio playback failed:", err));
     }
+  }, [dispatchState?.action_type, dispatchState?.last_updated_at, dispatchState?.status, isDispatchPending, latestTurn?.state]);
 
+  useEffect(() => {
+    if (!isDispatchPending) {
+      return undefined;
+    }
 
     const timer = window.setInterval(() => {
       setLocalCountdown((currentValue) => {
         const nextValue = currentValue == null ? DISPATCH_CONFIRMATION_WINDOW_SECONDS : currentValue - 1;
         if (nextValue <= 0) {
           window.clearInterval(timer);
-          if (!autoTriggeredRef.current && !pendingDecision) {
+          if (!autoTriggeredRef.current && !pendingDecisionRef.current) {
             autoTriggeredRef.current = true;
             setPendingDecision("auto_confirm");
             setDecisionFeedback("No response detected. Dispatching automatically...");
-            void Promise.resolve(onActionDecision?.("emergency_dispatch", "auto_confirm"))
+            void Promise.resolve(onActionDecisionRef.current?.("emergency_dispatch", "auto_confirm"))
               .catch(() => {
-
-
                 autoTriggeredRef.current = false;
                 setPendingDecision("");
                 setDecisionFeedback("Automatic dispatch failed. Please try again.");
@@ -324,7 +337,7 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [dispatchState?.action_type, dispatchState?.last_updated_at, dispatchState?.status, isDispatchPending, latestTurn?.state, onActionDecision, pendingDecision]);
+  }, [isDispatchPending]);
 
   useEffect(() => {
     if (isDispatchCompleted) {
