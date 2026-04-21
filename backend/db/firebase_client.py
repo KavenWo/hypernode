@@ -1,8 +1,22 @@
-import json
-import os
-from pathlib import Path
+"""Firestore and local sample-profile helpers for the active backend."""
 
-from db.models import PatientProfile
+import json
+import logging
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+from threading import Lock
+
+from db.models import (
+    AnonymousSession,
+    FrontendPatientProfile,
+    IncidentRecord,
+    EmergencyContact,
+    MedicalProfile,
+    PatientProfile,
+)
 
 try:
     from google.cloud import firestore
@@ -12,38 +26,219 @@ except ImportError:  # pragma: no cover - optional during early local setup
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 SAMPLE_PATIENT_PATH = BACKEND_DIR / "data" / "sample_patient.json"
+logger = logging.getLogger(__name__)
+
+# Global thread pool for I/O bound Firestore operations
+_executor = ThreadPoolExecutor(max_workers=10)
+_firestore_client = None
+_firestore_client_project = None
+_firestore_client_lock = Lock()
+
+
+def _configured_project_id() -> str:
+    return (
+        os.getenv("FIREBASE_PROJECT_ID")
+        or os.getenv("FIRESTORE_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or ""
+    )
 
 
 def _load_sample_profiles_payload() -> tuple[PatientProfile, list[PatientProfile]]:
-    """Support both the older single-profile file and the newer multi-profile file."""
+    """Load the canonical sample patient.
+
+    The helper still returns a list for API compatibility, but it now always
+    contains exactly one profile.
+    """
     with SAMPLE_PATIENT_PATH.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
 
-    if "default_profile" in payload:
-        default_profile = PatientProfile.model_validate(payload["default_profile"])
-        profiles = [
-            PatientProfile.model_validate(profile_payload)
-            for profile_payload in payload.get("profiles", [])
-        ]
-        return default_profile, profiles
+    profile = PatientProfile.model_validate(payload)
+    return profile, [profile]
 
-    legacy_profile = PatientProfile.model_validate(payload)
-    return legacy_profile, [legacy_profile]
+
+def _firestore_required() -> bool:
+    return os.getenv("FIRESTORE_REQUIRED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_storage_runtime_status() -> dict:
+    project_id = _configured_project_id()
+    firestore_configured = firestore is not None and bool(project_id)
+    sample_profiles_available = SAMPLE_PATIENT_PATH.exists()
+
+    if firestore_configured:
+        storage_mode = "firestore_preferred"
+    elif sample_profiles_available:
+        storage_mode = "local_sample_only"
+    else:
+        storage_mode = "unconfigured"
+
+    return {
+        "storage_mode": storage_mode,
+        "firestore_configured": firestore_configured,
+        "firestore_required": _firestore_required(),
+        "firestore_project": project_id,
+        "sample_profiles_available": sample_profiles_available,
+        "demo_ready": sample_profiles_available,
+    }
 
 
 def get_firestore_client():
-    project_id = os.getenv("FIRESTORE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    project_id = _configured_project_id()
     if firestore is None or not project_id:
         return None
-    return firestore.Client(project=project_id)
+    global _firestore_client, _firestore_client_project
+    if _firestore_client is not None and _firestore_client_project == project_id:
+        return _firestore_client
+
+    with _firestore_client_lock:
+        if _firestore_client is not None and _firestore_client_project == project_id:
+            return _firestore_client
+        _firestore_client = firestore.Client(project=project_id)
+        _firestore_client_project = project_id
+        return _firestore_client
+
+
+def _model_payload(model) -> dict:
+    return model.model_dump(mode="json")
+
+
+def _session_document(session_uid: str):
+    client = get_firestore_client()
+    if client is None:
+        return None
+    return client.collection("sessions").document(session_uid)
+
+
+def _frontend_profile_from_sample(sample: PatientProfile, session_uid: str) -> FrontendPatientProfile:
+    return FrontendPatientProfile(
+        patient_id=sample.user_id,
+        session_uid=session_uid,
+        full_name=sample.full_name,
+        age=sample.age,
+        gender=sample.gender,
+        primary_language=sample.primary_language,
+        address=sample.address,
+        medical_profile=MedicalProfile(
+            blood_type=sample.blood_type,
+            allergies=sample.allergies,
+            medications=sample.medications,
+            chronic_conditions=sample.pre_existing_conditions,
+            blood_thinners=sample.blood_thinners,
+            mobility_support=sample.mobility_support,
+            notes="Seeded default patient profile for this anonymous session.",
+        ),
+        emergency_contacts=[
+            EmergencyContact(
+                contact_id=f"contact_{index + 1}",
+                name=f"Emergency Contact {index + 1}",
+                phone=phone,
+                relationship="emergency_contact",
+                priority=index + 1,
+            )
+            for index, phone in enumerate(sample.emergency_contacts)
+        ],
+    )
+
+
+def _seeded_frontend_profiles(session_uid: str) -> list[FrontendPatientProfile]:
+    sample_profile, _ = _load_sample_profiles_payload()
+    return [_frontend_profile_from_sample(sample_profile, session_uid)]
+
+
+def preview_default_session_patients(session_uid: str) -> list[FrontendPatientProfile]:
+    """Return the default session patients without touching Firestore."""
+    return _seeded_frontend_profiles(session_uid)
+
+
+def _write_session_patient_profile(profile: FrontendPatientProfile, batch=None) -> FrontendPatientProfile:
+    session_ref = _session_document(profile.session_uid or "")
+    if session_ref is None:
+        return profile
+
+    patient_ref = session_ref.collection("patients").document(profile.patient_id)
+    base_payload = profile.model_dump(mode="json")
+    base_payload.pop("medical_profile", None)
+    base_payload.pop("emergency_contacts", None)
+
+    if batch:
+        batch.set(patient_ref, base_payload, merge=True)
+        batch.set(
+            patient_ref.collection("medical_profile").document("current"),
+            _model_payload(profile.medical_profile),
+            merge=True,
+        )
+        for contact in profile.emergency_contacts:
+            batch.set(
+                patient_ref.collection("emergency_contacts").document(contact.contact_id),
+                _model_payload(contact),
+                merge=True,
+            )
+    else:
+        patient_ref.set(base_payload, merge=True)
+        patient_ref.collection("medical_profile").document("current").set(
+            _model_payload(profile.medical_profile),
+            merge=True,
+        )
+        for contact in profile.emergency_contacts:
+            patient_ref.collection("emergency_contacts").document(contact.contact_id).set(
+                _model_payload(contact),
+                merge=True,
+            )
+    return profile
+
+
+def _load_session_patient_profile(session_uid: str, patient_id: str) -> FrontendPatientProfile | None:
+    session_ref = _session_document(session_uid)
+    if session_ref is None:
+        return None
+
+    patient_ref = session_ref.collection("patients").document(patient_id)
+    
+    # Concurrent fetch of patient doc, medical profile and emergency contacts
+    def fetch_patient():
+        return patient_ref.get()
+
+    def fetch_medical():
+        return patient_ref.collection("medical_profile").document("current").get()
+
+    def fetch_contacts():
+        return list(patient_ref.collection("emergency_contacts").stream())
+
+    future_patient = _executor.submit(fetch_patient)
+    future_medical = _executor.submit(fetch_medical)
+    future_contacts = _executor.submit(fetch_contacts)
+
+    patient_document = future_patient.result()
+    if not patient_document.exists:
+        return None
+
+    medical_doc = future_medical.result()
+    contacts_docs = future_contacts.result()
+
+    payload = patient_document.to_dict()
+    contacts = [doc.to_dict() for doc in contacts_docs]
+    
+    payload["medical_profile"] = medical_doc.to_dict() if medical_doc.exists else {}
+    payload["emergency_contacts"] = contacts
+    return FrontendPatientProfile.model_validate(payload)
 
 
 def load_patient_profile(user_id: str) -> PatientProfile:
     client = get_firestore_client()
     if client is not None:
-        document = client.collection("patients").document(user_id).get()
-        if document.exists:
-            return PatientProfile.model_validate(document.to_dict())
+        try:
+            document = client.collection("patients").document(user_id).get()
+            if document.exists:
+                return PatientProfile.model_validate(document.to_dict())
+        except Exception as exc:
+            log_message = (
+                "Firestore profile lookup failed for user %s; falling back to local sample profiles. Error: %s"
+            )
+            if _firestore_required():
+                logger.warning(log_message, user_id, exc)
+            else:
+                logger.info(log_message, user_id, exc)
 
     default_profile, profiles = _load_sample_profiles_payload()
 
@@ -54,15 +249,275 @@ def load_patient_profile(user_id: str) -> PatientProfile:
     return default_profile.model_copy(update={"user_id": user_id})
 
 
-def list_sample_patient_profiles() -> list[PatientProfile]:
-    """Return all locally configured sample patient profiles for UI selection."""
-    _, profiles = _load_sample_profiles_payload()
+def load_frontend_patient_profile(patient_id: str, session_uid: str | None = None) -> FrontendPatientProfile:
+    client = get_firestore_client()
+    if client is not None and session_uid:
+        try:
+            seeded_session = get_or_create_anonymous_session(session_uid=session_uid, touch=False)
+            if not seeded_session.default_patient_seeded:
+                seed_default_session_patients(session_uid)
+            profile = _load_session_patient_profile(session_uid, patient_id)
+            if profile is not None:
+                return profile
+        except Exception as exc:
+            logger.info(
+                "Firestore frontend profile lookup failed for patient %s; falling back to local sample profile. Error: %s",
+                patient_id,
+                exc,
+            )
+
+    legacy_profile = load_patient_profile(patient_id)
+    return FrontendPatientProfile(
+        patient_id=patient_id,
+        session_uid=session_uid,
+        full_name=legacy_profile.full_name,
+        age=legacy_profile.age,
+        gender=legacy_profile.gender,
+        primary_language=legacy_profile.primary_language,
+        address=legacy_profile.address,
+        medical_profile=MedicalProfile(
+            blood_type=legacy_profile.blood_type,
+            allergies=legacy_profile.allergies,
+            medications=legacy_profile.medications,
+            chronic_conditions=legacy_profile.pre_existing_conditions,
+            blood_thinners=legacy_profile.blood_thinners,
+            mobility_support=legacy_profile.mobility_support,
+        ),
+        emergency_contacts=[
+            EmergencyContact(
+                contact_id=f"contact_{index + 1}",
+                name=f"Emergency Contact {index + 1}",
+                phone=phone,
+                relationship="emergency_contact",
+                priority=index + 1,
+            )
+            for index, phone in enumerate(legacy_profile.emergency_contacts)
+        ],
+    )
+
+
+def save_frontend_patient_profile(profile: FrontendPatientProfile) -> FrontendPatientProfile:
+    if not profile.session_uid:
+        return profile
+    return _write_session_patient_profile(profile)
+
+
+def get_or_create_anonymous_session(
+    session_uid: str,
+    patient_id: str | None = None,
+    touch: bool = True,
+) -> AnonymousSession:
+    client = get_firestore_client()
+    if client is not None:
+        try:
+            session_ref = client.collection("sessions").document(session_uid)
+            document = session_ref.get()
+            if document.exists:
+                session = AnonymousSession.model_validate(document.to_dict())
+            else:
+                session = AnonymousSession(session_uid=session_uid)
+            changed = not document.exists
+            if patient_id and patient_id not in session.patient_ids:
+                session.patient_ids.append(patient_id)
+                changed = True
+            if patient_id and not session.active_patient_id:
+                session.active_patient_id = patient_id
+                changed = True
+            if touch:
+                session.last_seen_at = datetime.utcnow()
+                changed = True
+            if changed:
+                session_ref.set(_model_payload(session), merge=True)
+            return session
+        except Exception as exc:
+            logger.info("Firestore session bootstrap failed for %s. Error: %s", session_uid, exc)
+
+    session = AnonymousSession(session_uid=session_uid)
+    if patient_id:
+        session.patient_ids.append(patient_id)
+        session.active_patient_id = patient_id
+    return session
+
+
+def seed_default_session_patients(session_uid: str) -> list[FrontendPatientProfile]:
+    client = get_firestore_client()
+    session = get_or_create_anonymous_session(session_uid=session_uid)
+    profiles = _seeded_frontend_profiles(session_uid)
+
+    if client is not None:
+        batch = client.batch()
+        for profile in profiles:
+            _write_session_patient_profile(profile, batch=batch)
+
+        session.patient_ids = [profile.patient_id for profile in profiles]
+        session.default_patient_seeded = True
+        if not session.active_patient_id and session.patient_ids:
+            session.active_patient_id = session.patient_ids[0]
+
+        session.last_seen_at = datetime.utcnow()
+        session_ref = client.collection("sessions").document(session_uid)
+        batch.set(session_ref, _model_payload(session), merge=True)
+        batch.commit()
+    else:
+        # Fallback for local/unconfigured mode
+        session.patient_ids = [profile.patient_id for profile in profiles]
+        session.default_patient_seeded = True
+        if not session.active_patient_id and session.patient_ids:
+            session.active_patient_id = session.patient_ids[0]
+
     return profiles
+
+
+def list_session_patient_profiles(session_uid: str) -> list[FrontendPatientProfile]:
+    client = get_firestore_client()
+    if client is not None:
+        try:
+            t_start = time.time()
+            session = get_or_create_anonymous_session(session_uid, touch=False)
+            if not session.default_patient_seeded:
+                return seed_default_session_patients(session_uid)
+
+            session_ref = _session_document(session_uid)
+            if session_ref is None:
+                return _seeded_frontend_profiles(session_uid)
+
+            # Stream patient references
+            patient_refs = list(session_ref.collection("patients").stream())
+            if not patient_refs:
+                return _seeded_frontend_profiles(session_uid)
+
+            # Map patient IDs to parallel load futures
+            futures = [
+                _executor.submit(_load_session_patient_profile, session_uid, doc.id)
+                for doc in patient_refs
+            ]
+            
+            profiles = []
+            for future in futures:
+                res = future.result()
+                if res:
+                    profiles.append(res)
+            
+            if profiles:
+                logger.info(f"Parallel patient load: {len(profiles)} profiles in {time.time() - t_start:.3f}s")
+                return profiles
+        except Exception as exc:
+            logger.info("Firestore session patient list failed for %s. Error: %s", session_uid, exc)
+
+    return _seeded_frontend_profiles(session_uid)
+
+
+def save_incident_record(incident: IncidentRecord) -> IncidentRecord:
+    session_ref = _session_document(incident.session_uid)
+    if session_ref is None:
+        logger.info(
+            "Skipping incident persistence because Firestore session document is unavailable | session_uid=%s incident_id=%s",
+            incident.session_uid,
+            incident.incident_id,
+        )
+        return incident
+    session_ref.collection("incidents").document(incident.incident_id).set(_model_payload(incident), merge=True)
+    session_ref.set(
+        {
+            "active_incident_id": incident.incident_id,
+            "last_seen_at": datetime.utcnow().isoformat(),
+        },
+        merge=True,
+    )
+    logger.info(
+        "Persisted incident record to Firestore | session_uid=%s incident_id=%s status=%s",
+        incident.session_uid,
+        incident.incident_id,
+        incident.status,
+    )
+    return incident
+
+
+def load_incident_record(session_uid: str, incident_id: str) -> IncidentRecord | None:
+    session_ref = _session_document(session_uid)
+    if session_ref is None:
+        return None
+
+    document = session_ref.collection("incidents").document(incident_id).get()
+    if not document.exists:
+        return None
+
+    return IncidentRecord.model_validate(document.to_dict())
+
+
+def find_incident_record(incident_id: str) -> IncidentRecord | None:
+    client = get_firestore_client()
+    if client is None:
+        return None
+
+    try:
+        session_documents = client.collection("sessions").stream()
+        for session_document in session_documents:
+            session_uid = session_document.id
+            record = load_incident_record(session_uid, incident_id)
+            if record is not None:
+                return record
+    except Exception as exc:
+        logger.info("Firestore incident lookup failed for %s. Error: %s", incident_id, exc)
+
+    return None
+
+
+def list_session_incidents(session_uid: str) -> list[IncidentRecord]:
+    session_ref = _session_document(session_uid)
+    if session_ref is None:
+        return []
+
+    entries: list[IncidentRecord] = []
+    documents = session_ref.collection("incidents").stream()
+    for document in documents:
+        entries.append(IncidentRecord.model_validate(document.to_dict()))
+
+    entries.sort(key=lambda entry: entry.created_at, reverse=True)
+    return entries
+
+
+def find_incident_by_realtime_session_id(session_id: str) -> IncidentRecord | None:
+    """Locate an incident record by its associated Phase 4 realtime session ID.
+
+    This uses a Firestore collectionGroup query to search all 'incidents'
+    subcollections across all sessions.
+    """
+    client = get_firestore_client()
+    if client is None:
+        return None
+
+    try:
+        # Search the nested field within the simulation_trigger map
+        query = (
+            client.collection_group("incidents")
+            .where("simulation_trigger.realtime_session_id", "==", session_id)
+            .limit(1)
+        )
+        docs = list(query.stream())
+        if docs:
+            return IncidentRecord.model_validate(docs[0].to_dict())
+    except Exception as exc:
+        logger.info("Firestore global incident lookup failed for %s. Error: %s", session_id, exc)
+
+    return None
+
+def list_sample_patient_profiles() -> list[PatientProfile]:
+    """Return the single locally configured sample patient profile."""
+    profile, _ = _load_sample_profiles_payload()
+    return [profile]
 
 
 def seed_sample_patient() -> PatientProfile:
     profile, _ = _load_sample_profiles_payload()
     client = get_firestore_client()
     if client is not None:
-        client.collection("patients").document(profile.user_id).set(profile.model_dump())
+        try:
+            client.collection("patients").document(profile.user_id).set(profile.model_dump())
+        except Exception as exc:
+            log_message = "Firestore seed failed; local sample profile remains available. Error: %s"
+            if _firestore_required():
+                logger.warning(log_message, exc)
+            else:
+                logger.info(log_message, exc)
     return profile

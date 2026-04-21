@@ -1,0 +1,194 @@
+{
+  "description": "Bucket-aware Phase 2 retrieval policy asset used to generate separate retrieval queries per output bucket for the MVP backend.",
+  "policy_version": "phase2_bucket_queries_v1",
+  "intents": {
+    "cpr_trigger_guidance": {
+      "bucket_queries": {
+        "cpr_or_airway_steps": [
+          "not breathing start CPR AED emergency help",
+          "when to start CPR if person not breathing normally"
+        ],
+        "red_flags_and_escalation": [
+          "not breathing after collapse emergency warning signs"
+        ]
+      }
+    },
+    "abnormal_breathing_after_fall": {
+      "bucket_queries": {
+        "cpr_or_airway_steps": [
+          "abnormal breathing after fall what to do bystander"
+        ],
+        "red_flags_and_escalation": [
+          "abnormal breathing after fall emergency warning signs"
+        ]
+      }
+    },
+    "unconscious_after_fall": {
+      "bucket_queries": {
+        "cpr_or_airway_steps": [
+          "unconscious after fall airway breathing emergency help"
+        ],
+        "red_flags_and_escalation": [
+          "unresponsive after fall emergency warning signs"
+        ],
+        "bystander_instructions": [
+          "bystander what to do if person is unconscious after fall"
+        ]
+      }
+    },
+    "severe_bleeding_after_fall": {
+      "bucket_queries": {
+        "immediate_actions": [
+          "severe bleeding after fall first aid emergency"
+        ],
+        "red_flags_and_escalation": [
+          "severe bleeding after fall urgent escalation warning signs"
+        ],
+        "do_not_do_warnings": [
+          "severe bleeding after fall what not to do"
+        ]
+      }
+    },
+    "head_injury_blood_thinners": {
+      "bucket_queries": {
+        "red_flags_and_escalation": [
+          "head injury blood thinners fall emergency warning signs"
+        ],
+        "immediate_actions": [
+          "head injury after fall immediate care keep still"
+        ],
+        "do_not_do_warnings": [
+          "head injury after fall what not to do blood thinners"
+        ]
+      }
+    },
+    "head_injury_after_fall": {
+      "bucket_queries": {
+        "red_flags_and_escalation": [
+          "head injury after fall warning signs emergency"
+        ],
+        "immediate_actions": [
+          "head injury after fall immediate care"
+        ],
+        "monitoring_and_followup": [
+          "head injury after fall symptoms to watch for later"
+        ]
+      }
+    },
+    "possible_spinal_injury": {
+      "bucket_queries": {
+        "do_not_do_warnings": [
+          "suspected spinal injury after fall do not move first aid"
+        ],
+        "immediate_actions": [
+          "suspected spinal injury after fall keep still immediate care"
+        ],
+        "red_flags_and_escalation": [
+          "spinal injury after fall emergency warning signs"
+        ]
+      }
+    },
+    "fracture_or_cannot_stand": {
+      "bucket_queries": {
+        "immediate_actions": [
+          "cannot stand after fall possible fracture what to do"
+        ],
+        "do_not_do_warnings": [
+          "after fall possible fracture do not help stand"
+        ],
+        "red_flags_and_escalation": [
+          "unable to stand after fall emergency warning signs"
+        ]
+      }
+    },
+    "do_not_move_possible_injury": {
+      "bucket_queries": {
+        "do_not_do_warnings": [
+          "after fall when not to move injured person"
+        ],
+        "immediate_actions": [
+          "keep still after fall possible serious injury"
+        ]
+      }
+    },
+    "bystander_check_breathing": {
+      "bucket_queries": {
+        "bystander_instructions": [
+          "bystander check breathing after fall what to do"
+        ],
+        "cpr_or_airway_steps": [
+          "how to tell if breathing is normal after collapse"
+        ]
+      }
+    },
+    "bystander_check_consciousness": {
+      "bucket_queries": {
+        "bystander_instructions": [
+          "check responsiveness after collapse bystander"
+        ],
+        "red_flags_and_escalation": [
+          "not responding after fall emergency warning signs"
+        ]
+      }
+    },
+    "waiting_for_help": {
+      "bucket_queries": {
+        "monitoring_and_followup": [
+          "waiting for emergency help after collapse bystander what to do"
+        ],
+        "scene_safety": [
+          "stay with patient while waiting for ambulance first aid"
+        ],
+        "bystander_instructions": [
+          "what should bystander do while waiting for emergency responders"
+        ]
+      }
+    },
+    "bystander_instruction_mode": {
+      "bucket_queries": {
+        "bystander_instructions": [
+          "bystander first aid after fall what to do"
+        ],
+        "scene_safety": [
+          "bystander scene safety after fall first aid"
+        ],
+        "immediate_actions": [
+          "helping someone after a fall immediate steps"
+        ]
+      }
+    },
+    "fall_red_flags": {
+      "bucket_queries": {
+        "red_flags_and_escalation": [
+          "fall emergency warning signs red flags"
+        ],
+        "monitoring_and_followup": [
+          "after fall symptoms to watch for delayed warning signs"
+        ]
+      }
+    },
+    "fall_general_first_aid": {
+      "bucket_queries": {
+        "immediate_actions": [
+          "fall first aid immediate care"
+        ],
+        "scene_safety": [
+          "fall first aid scene safety"
+        ],
+        "monitoring_and_followup": [
+          "after minor fall symptoms to watch for"
+        ]
+      }
+    },
+    "monitor_low_risk_fall": {
+      "bucket_queries": {
+        "monitoring_and_followup": [
+          "mild fall home monitoring warning signs"
+        ],
+        "immediate_actions": [
+          "minor fall home care immediate steps"
+        ]
+      }
+    }
+  }
+}

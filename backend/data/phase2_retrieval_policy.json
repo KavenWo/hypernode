@@ -1,0 +1,123 @@
+{
+  "description": "Machine-readable Phase 2 retrieval policy asset used by the backend MVP to map case signals into retrieval intents and controlled search queries.",
+  "policy_version": "phase2_retrieval_v1",
+  "default_intent_limit": 2,
+  "max_intent_limit": 3,
+  "fallback_intents": [
+    "fall_red_flags",
+    "fall_general_first_aid"
+  ],
+  "intents": {
+    "cpr_trigger_guidance": {
+      "priority": 1,
+      "queries": [
+        "not breathing start CPR AED emergency help",
+        "when to start CPR if person not breathing normally"
+      ]
+    },
+    "abnormal_breathing_after_fall": {
+      "priority": 1,
+      "queries": [
+        "abnormal breathing after fall emergency warning signs",
+        "agonal abnormal breathing emergency what to do after collapse"
+      ]
+    },
+    "unconscious_after_fall": {
+      "priority": 1,
+      "queries": [
+        "unconscious after fall airway breathing emergency help",
+        "unresponsive after fall what to do breathing airway"
+      ]
+    },
+    "severe_bleeding_after_fall": {
+      "priority": 1,
+      "queries": [
+        "severe bleeding after fall first aid emergency",
+        "how to stop severe bleeding emergency help"
+      ]
+    },
+    "head_injury_blood_thinners": {
+      "priority": 2,
+      "queries": [
+        "head injury blood thinners fall emergency warning signs",
+        "head hit on blood thinners after fall urgent evaluation"
+      ]
+    },
+    "possible_spinal_injury": {
+      "priority": 2,
+      "queries": [
+        "suspected spinal injury after fall do not move first aid",
+        "neck back injury after fall keep still emergency"
+      ]
+    },
+    "head_injury_after_fall": {
+      "priority": 2,
+      "queries": [
+        "head injury after fall warning signs emergency",
+        "head injury fall when to seek urgent help"
+      ]
+    },
+    "fracture_or_cannot_stand": {
+      "priority": 3,
+      "queries": [
+        "cannot stand after fall possible fracture what to do",
+        "hip fracture after fall do not help stand"
+      ]
+    },
+    "do_not_move_possible_injury": {
+      "priority": 3,
+      "queries": [
+        "after fall when not to move injured person",
+        "keep still after fall possible serious injury"
+      ]
+    },
+    "bystander_check_breathing": {
+      "priority": 3,
+      "queries": [
+        "check breathing after fall bystander",
+        "how to tell if breathing is normal after collapse"
+      ]
+    },
+    "bystander_check_consciousness": {
+      "priority": 3,
+      "queries": [
+        "check responsiveness after collapse bystander",
+        "how to check if person is responsive after fall"
+      ]
+    },
+    "waiting_for_help": {
+      "priority": 3,
+      "queries": [
+        "waiting for emergency help after collapse bystander what to do",
+        "stay with patient while waiting for ambulance first aid"
+      ]
+    },
+    "fall_red_flags": {
+      "priority": 4,
+      "queries": [
+        "fall emergency warning signs red flags"
+      ]
+    },
+    "bystander_instruction_mode": {
+      "priority": 4,
+      "queries": [
+        "bystander first aid after fall what to do",
+        "helping someone after a fall immediate steps"
+      ]
+    },
+    "fall_general_first_aid": {
+      "priority": 4,
+      "queries": [
+        "fall first aid immediate care",
+        "fall first aid immediate care adult"
+      ]
+    },
+    "monitor_low_risk_fall": {
+      "priority": 4,
+      "queries": [
+        "mild fall home monitoring warning signs",
+        "after minor fall symptoms to watch for"
+      ]
+    }
+  }
+}

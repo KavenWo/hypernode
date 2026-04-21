@@ -1,11 +1,29 @@
 # Python local environments
 .venv/
 venv/
+env/
 
 # Python cache artifacts
 __pycache__/
 *.py[cod]
+*$py.class
+.pytest_cache/
+.uv-cache/
+
+# Node.js artifacts
+node_modules/
+dist/
+.npm
+.vite/
 
 # Local environment files
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
+# OS artifacts
+.DS_Store
+thumbs.db
+desktop.ini

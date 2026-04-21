@@ -1,3 +1,5 @@
+"""Grounded medical retrieval helpers for Vertex AI Search plus local fallback guidance used by the MVP backend."""
+
 import json
 import logging
 import os
@@ -16,6 +18,37 @@ except ImportError:  # pragma: no cover - optional during early local setup
     discoveryengine = None
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_vertex_search_engine_id() -> str:
+    engine_id = (os.getenv("VERTEX_AI_SEARCH_ENGINE_ID") or "").strip()
+    if engine_id:
+        return engine_id
+
+    adk_engine_resource = (os.getenv("ADK_VERTEX_SEARCH_ENGINE_ID") or "").strip()
+    if not adk_engine_resource:
+        return ""
+
+    marker = "/engines/"
+    if marker in adk_engine_resource:
+        return adk_engine_resource.split(marker, 1)[1]
+    return adk_engine_resource
+
+
+def _resolve_vertex_search_location() -> str:
+    configured_location = (os.getenv("VERTEX_AI_SEARCH_LOCATION") or "").strip()
+    if configured_location:
+        return configured_location
+
+    adk_engine_resource = (os.getenv("ADK_VERTEX_SEARCH_ENGINE_ID") or "").strip()
+    marker = "/locations/"
+    if marker in adk_engine_resource:
+        location_part = adk_engine_resource.split(marker, 1)[1]
+        if "/" in location_part:
+            return location_part.split("/", 1)[0]
+        return location_part
+
+    return "global"
 
 
 def _to_plain_value(value):
@@ -50,25 +83,25 @@ def _as_plain_list(value) -> list:
         return []
 
 
-def retrieve_medical_guidance(query: str, max_results: int = 3) -> list[str]:
+def retrieve_medical_guidance(query: str, max_results: int = 5) -> list[str]:
     return retrieve_medical_guidance_with_source(query, max_results=max_results)["snippets"]
 
 
-def retrieve_medical_guidance_with_source(query: str, max_results: int = 3) -> dict:
+def retrieve_medical_guidance_with_source(query: str, max_results: int = 5) -> dict:
     """Return grounded guidance plus the source used to retrieve it."""
-    logger.info("Retrieving grounded medical guidance for query: %s", query)
+    logger.info("Retrieving grounded guidance | query=%s", query)
     vertex_result = _query_vertex_ai_search(query, max_results=max_results)
     results = vertex_result["snippets"]
     if results:
-        logger.info(
+        logger.debug(
             "Vertex AI Search returned %d snippet(s) and %d reference(s).",
             len(results),
             len(vertex_result["references"]),
         )
         for index, snippet in enumerate(results, start=1):
-            logger.info("Vertex snippet %d: %s", index, snippet[:500])
+            logger.debug("Vertex snippet %d: %s", index, snippet[:500])
         for index, reference in enumerate(vertex_result["references"], start=1):
-            logger.info("Vertex reference %d: %s", index, json.dumps(reference))
+            logger.debug("Vertex reference %d: %s", index, json.dumps(reference))
         return {
             "snippets": results,
             "source": "vertex_ai_search",
@@ -79,9 +112,9 @@ def retrieve_medical_guidance_with_source(query: str, max_results: int = 3) -> d
     elif vertex_result["status"] == "error":
         logger.warning("Vertex AI Search failed for query: %s", query)
     fallback = _load_fallback_guidance(query)
-    logger.info("Using fallback medical guidance file with %d snippet(s).", len(fallback))
+    logger.info("Using fallback medical guidance | snippets=%d", len(fallback))
     for index, snippet in enumerate(fallback, start=1):
-        logger.info("Fallback snippet %d: %s", index, snippet[:500])
+        logger.debug("Fallback snippet %d: %s", index, snippet[:500])
     return {
         "snippets": fallback,
         "source": "fallback_file",
@@ -138,8 +171,8 @@ def _pick_reference_fields(document: object) -> dict:
 
 def _query_vertex_ai_search(query: str, max_results: int) -> dict:
     project_id = os.getenv("VERTEX_AI_SEARCH_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
-    location = os.getenv("VERTEX_AI_SEARCH_LOCATION", "global")
-    engine_id = os.getenv("VERTEX_AI_SEARCH_ENGINE_ID")
+    location = _resolve_vertex_search_location()
+    engine_id = _resolve_vertex_search_engine_id()
 
     if discoveryengine is None or not project_id or not engine_id:
         logger.warning(
@@ -162,8 +195,8 @@ def _query_vertex_ai_search(query: str, max_results: int) -> dict:
 
     try:
         credentials, detected_project = google_auth_default()
-        logger.info("ADC resolved for Vertex AI Search. Detected project: %s", detected_project or "<none>")
-        logger.info("Calling Vertex AI Search serving config: %s", serving_config)
+        logger.debug("ADC resolved for Vertex AI Search. Detected project: %s", detected_project or "<none>")
+        logger.debug("Calling Vertex AI Search serving config: %s", serving_config)
         client = discoveryengine.SearchServiceClient(
             credentials=credentials,
             client_options=client_options,
@@ -228,13 +261,19 @@ def _query_vertex_ai_search(query: str, max_results: int) -> dict:
 
 
 def _load_fallback_guidance(query: str) -> list[str]:
-    logger.info("Loading fallback guidance from %s for query: %s", FALLBACK_GUIDANCE_PATH, query)
+    logger.debug("Loading fallback guidance from %s for query: %s", FALLBACK_GUIDANCE_PATH, query)
     with FALLBACK_GUIDANCE_PATH.open("r", encoding="utf-8") as handle:
         guidance = json.load(handle)
 
     lowered = query.lower()
     if "cpr" in lowered or "not breathing" in lowered:
         return guidance["cpr"]
+    if "bystander" in lowered or "responsive" in lowered:
+        return guidance["bystander_instructions"]
+    if "what not to do" in lowered or "do not" in lowered:
+        return guidance["do_not_do_warnings"]
     if "red flag" in lowered or "high risk" in lowered or "blood thinner" in lowered:
         return guidance["fall_red_flags"]
+    if "watch for" in lowered or "monitor" in lowered:
+        return guidance["monitoring_and_followup"]
     return guidance["first_aid_fall"]

@@ -1,0 +1,113 @@
+{
+  "description": "Mandatory-grounding protocol policy for high-risk responder guidance that must be fetched from Vertex before communication may present step-by-step instructions.",
+  "policy_version": "protocol_grounding_v1",
+  "protocols": {
+    "cpr": {
+      "priority": 1,
+      "grounding_required": true,
+      "activation_action_types": [
+        "start_cpr_guidance",
+        "retrieve_aed_if_available"
+      ],
+      "required_intents": [
+        "cpr_trigger_guidance"
+      ],
+      "preferred_buckets": [
+        "cpr_or_airway_steps",
+        "red_flags_and_escalation"
+      ],
+      "title": "CPR Guidance",
+      "communication_message": "I have the CPR steps ready. Start with the first step now."
+    },
+    "airway_breathing_check": {
+      "priority": 2,
+      "grounding_required": true,
+      "activation_action_types": [
+        "check_breathing"
+      ],
+      "required_intents": [
+        "abnormal_breathing_after_fall",
+        "bystander_check_breathing"
+      ],
+      "required_intent_mode": "any",
+      "preferred_buckets": [
+        "cpr_or_airway_steps",
+        "bystander_instructions",
+        "red_flags_and_escalation"
+      ],
+      "title": "Airway and Breathing Check",
+      "communication_message": "I have the breathing-check steps ready. Follow them now."
+    },
+    "response_check": {
+      "priority": 3,
+      "grounding_required": true,
+      "activation_action_types": [
+        "check_consciousness"
+      ],
+      "required_intents": [
+        "bystander_check_consciousness"
+      ],
+      "preferred_buckets": [
+        "bystander_instructions",
+        "red_flags_and_escalation"
+      ],
+      "title": "Response Check",
+      "communication_message": "I have the responsiveness-check steps ready. Follow them now."
+    },
+    "bleeding_control": {
+      "priority": 2,
+      "grounding_required": true,
+      "activation_action_types": [
+        "apply_pressure_to_bleeding"
+      ],
+      "required_intents": [
+        "severe_bleeding_after_fall"
+      ],
+      "preferred_buckets": [
+        "immediate_actions",
+        "do_not_do_warnings",
+        "red_flags_and_escalation"
+      ],
+      "title": "Bleeding Control",
+      "communication_message": "I have the bleeding-control steps ready. Start with the first step now."
+    },
+    "spinal_precautions": {
+      "priority": 2,
+      "grounding_required": true,
+      "activation_action_types": [
+        "keep_patient_still",
+        "do_not_move_patient"
+      ],
+      "required_intents": [
+        "possible_spinal_injury",
+        "do_not_move_possible_injury"
+      ],
+      "required_intent_mode": "any",
+      "preferred_buckets": [
+        "do_not_do_warnings",
+        "immediate_actions",
+        "red_flags_and_escalation"
+      ],
+      "title": "Spinal Precautions",
+      "communication_message": "I have the spinal-precaution steps ready. Follow them carefully now."
+    },
+    "waiting_for_help": {
+      "priority": 4,
+      "grounding_required": true,
+      "activation_action_types": [
+        "wait_for_responders",
+        "stay_on_scene"
+      ],
+      "required_intents": [
+        "waiting_for_help"
+      ],
+      "preferred_buckets": [
+        "monitoring_and_followup",
+        "scene_safety",
+        "bystander_instructions"
+      ],
+      "title": "Waiting for Help",
+      "communication_message": "I have the waiting-for-help steps ready. Keep following them while you stay with the patient."
+    }
+  }
+}

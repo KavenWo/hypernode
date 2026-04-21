@@ -15,13 +15,13 @@ async def inspect_fall_event(event: FallEvent) -> VisionAssessment:
     if event.motion_state == "rapid_descent" and event.confidence_score > 0.85:
         severity_hint = "critical"
     elif high_risk_state and event.confidence_score > 0.7:
-        severity_hint = "high"
+        severity_hint = "medium"
     elif event.confidence_score > 0.5:
         severity_hint = "medium"
     else:
         severity_hint = "low"
 
-    reasoning = (
+    reasoning = event.video_summary or (
         f"Motion state '{event.motion_state}' with confidence {event.confidence_score:.2f} "
         f"suggests an initial {severity_hint} risk profile."
     )
