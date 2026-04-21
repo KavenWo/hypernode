@@ -2,9 +2,11 @@
 
 ## 🔗 Project Links
 
-* **Live Demo**: [https://elder-guard-web-848039689147.us-central1.run.app](https://elder-guard-web-848039689147.us-central1.run.app)
-* **Demo Video**: [Link to YouTube/Google Drive placeholder]
-* **Submission Slides**: [Link to Google Slides placeholder]
+* **Live Demo**: [https://elder-guard-web-848039689147.us-central1.run.app]
+* **Live Backend**: [https://elder-guard-api-848039689147.us-central1.run.app/]
+* **GitHub**: [https://github.com/KavenWo/hypernode]
+* **Demo Video**: [https://drive.google.com/file/d/1IWPZKLI9tv-YwZMn4xhD0I4PxLt1Yi8V/view]
+* **Submission Slides**: [https://docs.google.com/presentation/d/1p5mnrbgPwq01if81_ZVz5XyvpN-q9IYicVPZ5zNyvqs/edit?usp=sharing]
 
 > The system is fully deployed on Google Cloud Run. Local setup is optional for evaluation.
 
