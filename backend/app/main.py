@@ -25,6 +25,9 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     """Simple health endpoint plus hints for the canonical fall-flow sequence."""
+    # This doubles as a lightweight discovery endpoint during the hackathon so
+    # anyone hitting the backend directly can see the main session-oriented API
+    # contract without opening the source first.
     return {
         "status": "ok",
         "message": "Vital Signs Agentic Backend is running",

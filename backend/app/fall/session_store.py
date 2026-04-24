@@ -26,6 +26,13 @@ from agents.shared.schemas import (
 
 @dataclass
 class FallSessionRecord:
+    """Single in-memory source of truth for one live fall-response session.
+
+    The rest of the backend reads and writes through this record so the
+    conversation layer, background reasoning task, execution runtime, and SSE
+    stream all observe the same canonical state snapshot.
+    """
+
     session_id: str
     event: FallEvent
     vitals: VitalSigns | None = None
@@ -70,6 +77,9 @@ class FallSessionStore:
         vitals: VitalSigns | None,
         interaction_input: InteractionInput,
     ) -> FallSessionRecord:
+        # New sessions start with a minimal canonical shell. Conversation,
+        # reasoning, and execution state are filled in progressively as the
+        # opening prompt, responder messages, and background refreshes arrive.
         session_id = f"phase4-{uuid4().hex[:12]}"
         record = FallSessionRecord(
             session_id=session_id,
@@ -118,6 +128,8 @@ class FallSessionStore:
         interaction_input: InteractionInput,
         bump_reasoning_version: bool = True,
     ) -> FallSessionRecord | None:
+        # Context versioning is what lets background reasoning know whether it
+        # is still working on the latest event/vitals/interaction snapshot.
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -143,6 +155,9 @@ class FallSessionStore:
         *,
         bump_reasoning_version: bool = False,
     ) -> FallSessionRecord | None:
+        # Transcript appends are also version-aware. Human turns can bump the
+        # reasoning input version so the background pipeline knows there is new
+        # responder information worth reassessing.
         clean_messages = [message.model_copy(deep=True) for message in messages if message.text.strip()]
         if not clean_messages:
             return self.get_session(session_id)
@@ -186,6 +201,9 @@ class FallSessionStore:
         reasoning_decision: ReasoningDecision | None = None,
         execution_state: ExecutionState | None = None,
     ) -> FallSessionRecord | None:
+        # Canonical flow state is the compact session view consumed by the
+        # frontend and route layer. Richer artifacts still live on the record,
+        # but this projection is the stable state-machine surface.
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -202,6 +220,9 @@ class FallSessionStore:
             return self._copy_record(record)
 
     def request_reasoning(self, *, session_id: str, reason: str) -> bool:
+        # A session can accumulate multiple triggers while one reasoning pass is
+        # already pending. We keep the highest requested version instead of
+        # spawning duplicate runs for every small update.
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -222,6 +243,8 @@ class FallSessionStore:
             return True
 
     def begin_reasoning_run(self, *, session_id: str) -> FallSessionRecord | None:
+        # Each run snapshots the processed version up front so later completion
+        # logic can tell whether the result is still current or already stale.
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None or record.reasoning_status != "pending":
@@ -268,6 +291,9 @@ class FallSessionStore:
         execution_updates: list[ExecutionUpdate] | None = None,
         pending_reasoning_context: str = "",
     ) -> bool:
+        # Reasoning completion updates the assessment and any time-critical auto
+        # message, but it intentionally does not overwrite interaction summary.
+        # Communication remains the authority for turn-level dialogue state.
         with self._lock:
             record = self._sessions.get(session_id)
             if record is None:
@@ -307,7 +333,8 @@ class FallSessionStore:
                     if assistant_copy.reasoning_input_version is None:
                         assistant_copy.reasoning_input_version = processed_version
                     record.conversation_history.append(assistant_copy)
-            # Store reasoning context for the communication agent to consume on next turn
+            # Store a one-turn reasoning summary for the communication agent to
+            # consume later without forcing an immediate assistant message.
             if pending_reasoning_context:
                 record.pending_reasoning_context = pending_reasoning_context
             record.reasoning_run_count += 1

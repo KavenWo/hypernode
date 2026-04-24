@@ -194,6 +194,9 @@ function MessagePreviewModal({ payload, onClose }) {
 }
 
 export default function DashboardActionCard({ latestAssessment, latestTurn, onActionDecision }) {
+  // This card is a UI projection of the backend action-state machine. It reads
+  // canonical state plus execution updates and lets the responder confirm or
+  // cancel only the actions the runtime explicitly exposes for control.
   const canonicalState = latestTurn?.state;
   const canonicalExecution = latestTurn?.execution_state;
   const reasoningDecision = latestTurn?.reasoning_decision;
@@ -213,14 +216,17 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
   const guidanceActive = canonicalExecution?.phase === "guidance";
   const hasAssessment = Boolean(latestAssessment || reasoningDecision);
 
-  // 1. Monitor
+  // Monitoring stays visually active as the baseline safety lane, even when a
+  // more urgent execution path is also underway.
   const isMonitor =
     monitorState?.status === "active" ||
     canonicalExecution?.phase === "idle" ||
     canonicalExecution?.phase === "monitoring" ||
     reasoningDecision?.action === "monitor";
 
-  // 2. Contact Family
+  // Family notifications can be sent as an initial alert plus later updates, so
+  // the card derives a consolidated status from both action state and execution
+  // update history.
   const familyMessage =
     buildMessageText(latestFamilyReminder) ||
     buildMessageText(latestFamilyAlert) ||
@@ -236,7 +242,9 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
   if (familyIsCompleted) contactFamilyStatus = "completed";
   else if (familyIsPlanned) contactFamilyStatus = "active";
 
-  // 3. Emergency Dispatch
+  // Dispatch is the only branch with an explicit pending-confirmation window.
+  // The UI mirrors that countdown locally so the responder sees immediate time
+  // feedback while the backend remains the source of truth.
   const isDispatchCompleted =
     dispatchStatusValue === "confirmed" ||
     dispatchStatusValue === "auto_dispatched" ||
@@ -313,6 +321,9 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
       return undefined;
     }
 
+    // The backend owns the real confirmation state, but a local countdown keeps
+    // the control responsive and visually understandable during the 15-second
+    // confirmation window.
     const timer = window.setInterval(() => {
       setLocalCountdown((currentValue) => {
         const nextValue = currentValue == null ? DISPATCH_CONFIRMATION_WINDOW_SECONDS : currentValue - 1;
@@ -369,6 +380,8 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
       return;
     }
 
+    // Decisions are intentionally thin wrappers around the backend runtime so
+    // the UI never tries to mutate action state on its own.
     setPendingDecision(decision);
     setDecisionFeedback(decision === "confirm" ? "Confirming dispatch..." : "Cancelling dispatch...");
 

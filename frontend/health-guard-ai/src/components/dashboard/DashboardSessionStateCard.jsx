@@ -31,6 +31,9 @@ export default function DashboardSessionStateCard({
   historyCount,
   phase,
 }) {
+  // This card is the visual explainer for the multi-agent pipeline. It does not
+  // make decisions itself; it translates the canonical backend session snapshot
+  // into human-readable statuses for judges and demo viewers.
   const [commMessageIdx, setCommMessageIdx] = useState(0);
   const [reasoningMessageIdx, setReasoningMessageIdx] = useState(0);
 
@@ -68,14 +71,17 @@ export default function DashboardSessionStateCard({
       }
     : null);
 
-  // Communication Agent Logic
+  // Communication state is driven from the live turn plus stream lifecycle.
+  // "Thinking" here means the frontend is waiting on the immediate turn path,
+  // not that background reasoning necessarily finished.
   const isCommRunning = phase === "sending" || phase === "starting";
   const commStatus = isCommRunning ? "pending" : (latestTurn ? "active" : "idle");
   let commStatusText = latestTurn ? "Listening" : "Standby";
   if (isCommRunning) commStatusText = "Thinking";
   if (streamStatus === "connecting") commStatusText = "Connecting";
 
-  // Bystander Agent Logic
+  // Guidance prefers grounded protocol steps when available; otherwise the card
+  // falls back to the lighter turn-level guidance returned with the response.
   const protocolSteps = protocolGuidance?.steps || [];
   const guidanceSteps = protocolSteps.length > 0 ? protocolSteps : (latestTurn?.guidance_steps || []);
   const currentGuidanceStepIndex = canonicalExecution?.guidance_step_index ?? 0;
@@ -85,7 +91,8 @@ export default function DashboardSessionStateCard({
       : "";
   const protocolKey = protocolGuidance?.protocol_key || canonicalExecution?.guidance_protocol || "";
   const groundingRequired = Boolean(protocolGuidance?.grounding_required || protocolKey);
-  // Reasoning Agent Logic
+  // Reasoning status comes from the backend's async refresh pipeline, so it can
+  // remain pending even after the communication lane has already replied.
   const reasoningState = latestTurn?.reasoning_status;
   let reasoningStatus = "idle";
   let reasoningStatusText = "Standby";
@@ -123,7 +130,9 @@ export default function DashboardSessionStateCard({
     return () => clearInterval(interval);
   }, [reasoningStatus]);
 
-  // Execution Agent Logic
+  // Execution activity summarizes the canonical execution phase plus explicit
+  // execution updates, which is why dispatch and grounded guidance can show as
+  // active even when no new assistant text has appeared yet.
   const executionUpdates = latestTurn?.execution_updates || [];
   const actionStates = latestTurn?.action_states || [];
 
@@ -167,7 +176,9 @@ export default function DashboardSessionStateCard({
       : "Running grounded execution guidance for the decided scenario.";
   }
 
-  // Sentinel Agent Logic
+  // Sentinel can be represented either by the full assessment detection object
+  // or by the lightweight demo-video analysis result before a live session even
+  // starts. This keeps the top of the demo flow visible in one place.
   const sentinelStatus = isSentinelAnalyzing
     ? "pending"
     : sentinelDetection

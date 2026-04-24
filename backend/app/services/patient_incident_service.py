@@ -115,6 +115,13 @@ class ExecuteActionRequest(BaseModel):
 
 
 class IncidentContextUpdate(BaseModel):
+    """Durable mirror of the live session snapshot stored with an incident.
+
+    The dashboard history only needs a concise incident status, but saving this
+    richer context lets the app reconstruct what the backend knew about the
+    conversation, reasoning, and execution state at that point in time.
+    """
+
     conversation_history: list[dict] | None = None
     canonical_communication_state: dict | None = None
     reasoning_decision: dict | None = None
@@ -190,6 +197,9 @@ _incidents: dict[str, Incident] = {}
 
 
 def _persist_incident(incident: Incident) -> Incident:
+    # All app-layer incident mutations funnel through this helper so Firestore
+    # stays aligned with the in-memory incident object the frontend just acted
+    # on. That keeps history views and session recovery using one shape.
     save_incident_record(
         IncidentRecord(
             incident_id=incident.incident_id,
@@ -227,6 +237,8 @@ def _persist_incident(incident: Incident) -> Incident:
 
 
 def _incident_from_record(record: IncidentRecord) -> Incident:
+    """Rehydrate the app-layer incident model from Firestore storage."""
+
     action_execution = record.action_execution
     return Incident(
         incident_id=record.incident_id,
@@ -311,6 +323,8 @@ def _default_patient_profile(patient_id: str, session_uid: str | None = None) ->
 
 
 def _normalize_action(action: str | None) -> str:
+    # The frontend and backend historically used slightly different action
+    # names. Normalize them here so incident execution stays idempotent.
     normalized = (action or "monitor").strip().lower()
     aliases = {
         "monitoring": "monitor",
@@ -333,6 +347,9 @@ def _coerce_severity(value: str | None) -> SeverityLevel:
 
 
 def load_patient_profile(patient_id: str, session_uid: str | None = None) -> PatientProfile:
+    # Session-bound profiles come from the frontend patient workspace first, but
+    # we still provide a stable seeded fallback so the demo never starts with an
+    # empty patient card.
     if session_uid:
         firestore_profile = load_frontend_patient_profile(patient_id, session_uid)
         return PatientProfile(
@@ -402,6 +419,8 @@ def update_patient_profile(patient_id: str, updates: dict) -> PatientProfile:
 
 
 def create_incident(request: StartIncidentRequest) -> Incident:
+    """Create a new incident record that the dashboard can update over time."""
+
     load_patient_profile(request.patient_id, request.session_uid)
     incident = Incident(
         incident_id=f"INC-{uuid4().hex[:12].upper()}",
@@ -490,6 +509,9 @@ def update_incident_status(incident_id: str, request: IncidentStatusUpdate) -> I
 
 
 def submit_incident_answers(incident_id: str, request: SubmitAnswersRequest) -> Incident:
+    # Triage submission is the bridge from the live conversation into the
+    # durable incident timeline. It stores the distilled reasoning outcome the
+    # history UI needs without requiring the live session to stay open.
     incident = get_incident_record(incident_id)
     incident.status = IncidentStatus.REASONING
     incident.triage_answers = request.triage_answers
@@ -503,6 +525,9 @@ def submit_incident_answers(incident_id: str, request: SubmitAnswersRequest) -> 
 
 
 def update_incident_context(incident_id: str, request: IncidentContextUpdate) -> Incident:
+    # Context sync writes the richer backend snapshot after a turn or stream
+    # update so later review screens can inspect more than just the headline
+    # severity and final action.
     incident = get_incident_record(incident_id)
     payload = request.model_dump(exclude_unset=True)
 
@@ -567,6 +592,13 @@ def _simulate_action(action: str, incident: Incident) -> dict:
 
 
 def execute_incident_action_once(incident_id: str, action: str | None = None) -> Incident:
+    """Apply the final incident action idempotently.
+
+    The live session may attempt to sync the same action more than once through
+    streaming, refresh, or manual confirmation paths. Locking keeps history and
+    counts stable.
+    """
+
     incident = get_incident_record(incident_id)
     if incident.execution_locked or incident.action_taken:
         return incident

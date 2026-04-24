@@ -91,6 +91,9 @@ def _token_subject(token_payload: dict) -> str:
 
 
 def verify_firebase_id_token(raw_token: str) -> dict:
+    # Firebase anonymous auth is the frontend's entry ticket into the demo. We
+    # verify it once here, then the rest of the app works off the stable
+    # session_uid extracted from the token payload.
     project_id = _firebase_project_id()
     if not project_id:
         raise HTTPException(
@@ -115,6 +118,8 @@ def verify_firebase_id_token(raw_token: str) -> dict:
 def bootstrap_anonymous_session(
     request: SessionBootstrapRequest, defer_seeding: bool = False
 ) -> SessionBootstrapResponse:
+    """Resolve auth, create/load the anonymous session, and seed demo data."""
+
     t0 = time.time()
     token_payload = verify_firebase_id_token(request.id_token)
     t1 = time.time()
@@ -128,6 +133,8 @@ def bootstrap_anonymous_session(
     profile = None
 
     if not defer_seeding:
+        # The normal bootstrap path eagerly seeds demo patients so the dashboard
+        # can open with usable profile data on first load.
         seeded_profiles = (
             seed_default_session_patients(session_uid)
             if not session.default_patient_seeded
@@ -169,6 +176,8 @@ def background_bootstrap_tasks(session_uid: str, patient_id: str, create_profile
 
 
 def resolve_session_from_authorization(authorization: str | None) -> SessionMeResponse:
+    """Recover the current anonymous session from the frontend bearer token."""
+
     token = _extract_bearer_token(authorization)
     token_payload = verify_firebase_id_token(token)
     session_uid = _token_subject(token_payload)
