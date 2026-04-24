@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
-from pathlib import Path
 
 from fastapi import HTTPException
-from google.genai import types
-from pydantic import BaseModel, Field
 
 from app.fall.demo_video_registry import get_demo_video, get_demo_video_path
 from app.fall.contracts import DemoVideoAnalysisResponse

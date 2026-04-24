@@ -7,7 +7,7 @@ import os
 import time
 from datetime import datetime
 
-from fastapi import Header, HTTPException
+from fastapi import HTTPException
 from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field

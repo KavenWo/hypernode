@@ -8,7 +8,6 @@ uses Vertex AI Search for grounded execution guidance and returns the shared
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os

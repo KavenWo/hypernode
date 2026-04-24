@@ -10,7 +10,6 @@ from typing import Optional
 from fastapi import BackgroundTasks
 
 from app.fall.action_runtime_service import (
-    apply_session_action_decision,
     request_contact_family_action,
     request_emergency_dispatch_confirmation,
     reset_action_runtime_session,
