@@ -197,7 +197,6 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
   const canonicalState = latestTurn?.state;
   const canonicalExecution = latestTurn?.execution_state;
   const reasoningDecision = latestTurn?.reasoning_decision;
-  const executionUpdates = latestTurn?.execution_updates || [];
   const monitorState = findActionState(latestTurn, "monitor");
   const familyState = findActionState(latestTurn, "contact_family");
   const dispatchState = findActionState(latestTurn, "emergency_dispatch");
@@ -259,7 +258,7 @@ export default function DashboardActionCard({ latestAssessment, latestTurn, onAc
 
   const [localCountdown, setLocalCountdown] = useState(null);
   const [pendingDecision, setPendingDecision] = useState("");
-  const [decisionFeedback, setDecisionFeedback] = useState("");
+  const [, setDecisionFeedback] = useState("");
   const [selectedMessagePayload, setSelectedMessagePayload] = useState(null);
   const autoTriggeredRef = useRef(false);
   const pendingWindowKeyRef = useRef("");

@@ -21,23 +21,6 @@ function toTitleCase(value) {
     .join(" ");
 }
 
-function formatFlags(flags) {
-  if (!Array.isArray(flags) || flags.length === 0) {
-    return "None";
-  }
-  return flags.filter(Boolean).map((flag) => toTitleCase(flag)).join(", ");
-}
-
-function formatBooleanLabel(value, positiveLabel, negativeLabel = "Unknown") {
-  if (value === true) {
-    return positiveLabel;
-  }
-  if (value === false) {
-    return negativeLabel;
-  }
-  return "Unknown";
-}
-
 export default function DashboardSessionStateCard({
   sessionId,
   streamStatus,
@@ -65,14 +48,10 @@ export default function DashboardSessionStateCard({
     "Finalizing comprehensive clinical assessment..."
   ];
 
-  const canonicalState = latestTurn?.state;
   const canonicalCommunication = latestTurn?.canonical_communication_state;
   const canonicalExecution = latestTurn?.execution_state;
   const executionPlan = latestTurn?.execution_analysis;
-  const grounding = latestAssessment?.protocol_guidance;
   const reasoningDecision = latestTurn?.reasoning_decision;
-  const reasoningRuns = latestTurn?.reasoning_runs || [];
-  const latestReasoningRun = reasoningRuns.at?.(-1) || null;
   const detection = latestAssessment?.detection;
   const protocolGuidance = latestAssessment?.protocol_guidance;
   const isSentinelAnalyzing = phase === "analyzing_video";
@@ -97,8 +76,6 @@ export default function DashboardSessionStateCard({
   if (streamStatus === "connecting") commStatusText = "Connecting";
 
   // Bystander Agent Logic
-  const bystanderAvailable = canonicalCommunication?.bystander_present ?? latestTurn?.interaction?.bystander_available;
-  const bystanderCanHelp = latestTurn?.interaction?.bystander_can_help;
   const protocolSteps = protocolGuidance?.steps || [];
   const guidanceSteps = protocolSteps.length > 0 ? protocolSteps : (latestTurn?.guidance_steps || []);
   const currentGuidanceStepIndex = canonicalExecution?.guidance_step_index ?? 0;
@@ -107,58 +84,7 @@ export default function DashboardSessionStateCard({
       ? guidanceSteps[Math.min(currentGuidanceStepIndex, guidanceSteps.length - 1)]
       : "";
   const protocolKey = protocolGuidance?.protocol_key || canonicalExecution?.guidance_protocol || "";
-  const protocolTitle = protocolGuidance?.title || (protocolKey ? toTitleCase(protocolKey) : "");
-  const groundingStatus = protocolGuidance?.grounding_status || "not_needed";
-  const protocolReady = Boolean(protocolGuidance?.ready_for_communication && guidanceSteps.length > 0);
   const groundingRequired = Boolean(protocolGuidance?.grounding_required || protocolKey);
-  const bystanderGroundingActive = Boolean(bystanderAvailable && bystanderCanHelp && groundingRequired);
-  let bystanderStatus = "idle";
-  let bystanderStatusText = "Standby";
-
-  if (!latestTurn) {
-    bystanderStatus = "idle";
-    bystanderStatusText = "Standby";
-  } else if (groundingStatus === "pending") {
-    bystanderStatus = "pending";
-    bystanderStatusText = "Grounding";
-  } else if (protocolReady) {
-    bystanderStatus = "success";
-    bystanderStatusText = "Grounded";
-  } else if (bystanderGroundingActive) {
-    bystanderStatus = "active";
-    bystanderStatusText = "Searching";
-  } else if (bystanderAvailable && bystanderCanHelp) {
-    bystanderStatus = "active";
-    bystanderStatusText = "Ready";
-  } else if (bystanderAvailable) {
-    bystanderStatus = "idle";
-    bystanderStatusText = "Bystander";
-  } else {
-    bystanderStatus = "idle";
-    bystanderStatusText = "No Bystander";
-  }
-
-
-  const groundingActive = Boolean(groundingRequired && groundingStatus !== "not_needed");
-
-  let bystanderActivity = "Standing by for protocol-specific medical guidance triggers.";
-  if (!latestTurn) {
-    bystanderActivity = "Standing by for grounded first-aid protocol triggers.";
-  } else if (groundingStatus === "pending") {
-    bystanderActivity = protocolTitle
-      ? `Retrieving grounded ${protocolTitle} instructions from Vertex AI Search medical handbooks.`
-      : "Retrieving grounded medical instructions from Vertex AI Search.";
-  } else if (protocolReady) {
-    bystanderActivity = protocolTitle
-      ? `Grounded ${protocolTitle} instructions successfully retrieved and ready for use.`
-      : "Grounded medical instructions successfully retrieved and ready for use.";
-  } else if (groundingRequired) {
-    bystanderActivity = `Medical protocol identified (${protocolKey}). Preparing retrieval intents...`;
-  } else if (bystanderAvailable) {
-    bystanderActivity = "A bystander is present. Awaiting clinical reasoning to trigger protocol grounding.";
-  }
-
-
   // Reasoning Agent Logic
   const reasoningState = latestTurn?.reasoning_status;
   let reasoningStatus = "idle";
@@ -203,7 +129,6 @@ export default function DashboardSessionStateCard({
 
   let executionStatus = "idle";
   let executionStatusText = "Standby";
-  let isExecutionPulsing = false;
   let executionActivity = latestTurn
     ? "Awaiting actionable triggers from the reasoning engine."
     : "Standing by for emergency action triggers.";
@@ -211,7 +136,6 @@ export default function DashboardSessionStateCard({
   if (canonicalExecution?.dispatch_status === "pending_confirmation") {
     executionStatus = "pending";
     executionStatusText = "Countdown";
-    isExecutionPulsing = true;
     executionActivity = "Dispatch confirmation window is active before emergency services are contacted automatically.";
   } else if (
     canonicalExecution?.dispatch_status === "confirmed" ||

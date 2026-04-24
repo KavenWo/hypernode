@@ -21,7 +21,7 @@ export async function bootstrapAnonymousSession(patientId = null) {
         create_profile: true,
       }),
     });
-  } catch (error) {
+  } catch {
     throw new Error(
       `Failed to reach backend session bootstrap at ${API_BASE_URL}. Make sure the backend server is running and reachable.`,
     );

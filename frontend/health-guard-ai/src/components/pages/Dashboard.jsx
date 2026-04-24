@@ -925,7 +925,7 @@ export default function Dashboard({
 
       // Update messages with the real response from the backend
       const serverAppended = payload.transcript_append || [];
-      setMessages((current) => {
+      setMessages(() => {
         // Find if userMessage is already in current (it should be)
         // Then append what server said.
         // We use a functional update to be safe.
@@ -1044,7 +1044,7 @@ export default function Dashboard({
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      <DashboardHeader runtimeStatus={runtimeStatus} authSession={authSession} />
+      <DashboardHeader authSession={authSession} />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 

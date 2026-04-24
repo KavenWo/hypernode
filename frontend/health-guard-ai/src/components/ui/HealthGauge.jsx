@@ -6,7 +6,6 @@ export default function HealthGauge({
   max = 100, 
   low, 
   high, 
-  unit = "", 
   color = "var(--green)" 
 }) {
   // Calculate percentage for the marker

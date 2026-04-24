@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Sidebar from "./components/layout/Sidebar";
 import Dashboard from "./components/pages/Dashboard";
 import ProfilePage from "./components/pages/ProfilePage";
@@ -21,11 +21,6 @@ export default function App() {
   const [patientProfiles, setPatientProfiles] = useState([]);
   const sessionRestoreStartedRef = useRef(false);
   const currentPatientId = patientProfiles[0]?.patientId || "";
-
-  const currentPatient = useMemo(
-    () => patientProfiles[0] || null,
-    [patientProfiles],
-  );
 
   useEffect(() => {
     let cancelled = false;
