@@ -246,6 +246,14 @@ def build_interaction_summary(
     patient_answers: list[PatientAnswer],
     recommended_action: str | None,
 ) -> InteractionSummary:
+    """Project the latest responder context into a communication strategy.
+
+    This sits between raw conversation facts and the communication agent. The
+    goal is to decide who the system should address next, whether this turn is
+    still triage vs guided action, and whether the new information is important
+    enough to justify a background reasoning refresh.
+    """
+
     responder_mode_hint = interaction.responder_mode_hint if interaction else None
     inferred_mode = responder_mode_hint or _responder_mode(patient_answers)
     context = InteractionContext(
@@ -383,6 +391,14 @@ async def _run_clinical_state_stage(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
 ) -> tuple[VisionAssessment, VitalAssessment | None, ClinicalAssessment]:
+    """Run the core multimodal severity pass before any grounding decisions.
+
+    This is the fast path used on every reasoning cycle: vision evaluates the
+    fall event, vitals adds physiological context, and the reasoning model
+    combines those signals with the patient profile plus latest conversation
+    answers into one clinical snapshot.
+    """
+
     runtime = get_fall_agent_runtime()
     vision_assessment = await runtime.inspect_fall_event(event)
     vital_assessment = await runtime.inspect_vitals(vitals)
@@ -405,6 +421,14 @@ def _run_grounded_guidance_stage(
     action: str,
     forced_intents: list[str] | None = None,
 ) -> tuple[dict, dict, GuidanceSummary]:
+    """Run the heavier retrieval path that turns risk into concrete guidance.
+
+    Unlike the fast-path reasoning pass, this stage is allowed to retrieve
+    protocol snippets and normalize them into responder-facing steps. Keeping it
+    separate makes it clear when the system is only classifying risk vs when it
+    is grounding actionable instructions.
+    """
+
     retrieval_plan = build_phase2_retrieval_plan(
         patient_profile=patient_profile,
         patient_answers=patient_answers,
@@ -634,6 +658,14 @@ def _build_communication_handoff(
     guidance: GuidanceSummary,
     protocol_guidance: ProtocolGuidanceSummary,
 ) -> CommunicationHandoffSummary:
+    """Translate reasoning output into communication-agent priorities.
+
+    The communication agent should not have to reverse-engineer the entire
+    clinical assessment. This handoff condenses the latest reasoning snapshot
+    into one turn-level objective: ask a missing-fact question, surface an
+    execution update, or present the next grounded safety instruction.
+    """
+
     target = interaction_summary.communication_target
     immediate_step = guidance.steps[0] if guidance.steps else None
     priority_missing_fact = clinical_assessment.reasoning_trace.priority_missing_fact
@@ -783,6 +815,9 @@ async def run_reasoning_assessment(
         patient_answers=patient_answers or [],
         communication_state=communication_state,
     )
+    # Reasoning runs off the canonical communication snapshot when available so
+    # refreshes stay consistent even if the raw transcript contains duplicates,
+    # retries, or wording variation across turns.
     allow_grounding = _has_meaningful_conversation_context(
         patient_answers=answers,
         interaction=interaction,
@@ -794,7 +829,9 @@ async def run_reasoning_assessment(
         recommended_action=None,
     )
 
-    # Step A + B: Clinical state assessment (1 Gemini Pro call)
+    # Step A + B: first produce the clinical severity/action recommendation.
+    # This keeps the initial pass quick and lets the UI react before any
+    # retrieval-heavy protocol grounding is considered.
     vision_assessment, vital_assessment, clinical_assessment = await _run_clinical_state_stage(
         event=event,
         vitals=vitals,
@@ -805,7 +842,8 @@ async def run_reasoning_assessment(
     next_action = clinical_assessment.recommended_action
     reasoning_support_summary = GroundingPassSummary(source="not_requested")
 
-    # Step B' (conditional): Reasoning-support grounding only
+    # Step B' (conditional): only escalate into support grounding when the fast
+    # pass still has dangerous uncertainty or a clearly high-risk presentation.
     if _should_trigger_reasoning_support(
         action=next_action,
         clinical_assessment=clinical_assessment_summary,
@@ -846,13 +884,17 @@ async def run_reasoning_assessment(
         recommended_action=next_action,
     )
 
-    # Build non-grounded guidance (lightweight, no Vertex AI Search)
+    # Even when no protocol retrieval is needed, the frontend still needs a
+    # concise next step. This lightweight guidance is intentionally generic and
+    # safe to surface before any grounded execution-stage protocol arrives.
     normalized_guidance = _build_non_grounded_guidance(
         action=next_action,
         clinical_assessment=clinical_assessment_summary,
     )
 
-    # Build communication handoff without protocol grounding
+    # The communication handoff is the contract consumed by the conversation
+    # layer on the next turn; it tells the communication agent what to
+    # prioritize without letting it override the clinical decision itself.
     communication_handoff = _build_communication_handoff(
         action=next_action,
         interaction_summary=interaction_summary,

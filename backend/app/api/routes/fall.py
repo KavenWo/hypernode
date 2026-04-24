@@ -13,8 +13,8 @@ from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
 
 from app.fall.assessment_service import get_runtime_status
+from app.fall.action_runtime_service import apply_session_action_decision
 from app.fall.conversation_service import (
-    apply_session_action_decision,
     get_fall_conversation_session_state,
     reset_fall_conversation_session,
     start_fall_conversation_session,
@@ -107,6 +107,9 @@ async def run_session_turn(
     background_tasks: BackgroundTasks,
 ) -> CommunicationTurnResponse:
     """Run one turn in the canonical fall-response finite-state session flow."""
+    # The HTTP response returns the immediate turn result, while heavier
+    # reasoning/execution refresh work can continue in the background and reach
+    # the dashboard through session-state polling or SSE updates.
     return await run_fall_conversation_turn(
         request,
         background_tasks=background_tasks,
@@ -166,6 +169,9 @@ async def stream_session_events(session_id: str, request: Request) -> StreamingR
         raise HTTPException(status_code=404, detail="Session not found")
 
     async def event_stream():
+        # SSE gives the dashboard a push-based mirror of the canonical session.
+        # We only emit when the version changes, plus occasional keepalives so
+        # the browser connection stays warm during quiet periods.
         last_version = -1
         keepalive_ticks = 0
         while True:

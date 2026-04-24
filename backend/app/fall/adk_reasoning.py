@@ -38,6 +38,8 @@ ADK_REASONING_APP_NAME = "fall-reasoning-adk"
 
 
 class AdkReasoningDraft(BaseModel):
+    """Strict draft payload expected back from the ADK reasoning model."""
+
     severity: str = Field(description="Overall severity: low, medium, or critical.")
     recommended_action: str = Field(
         description="Recommended action: monitor, contact_family, dispatch_pending_confirmation, or emergency_dispatch."
@@ -160,6 +162,8 @@ def _extract_json_block(text: str) -> str:
 
 
 def _normalize_draft_payload(payload: dict) -> dict:
+    # ADK output can still drift in shape. Normalize aggressively before schema
+    # validation so the deterministic backend policy remains the final guardrail.
     normalized = dict(payload)
     list_fields = {
         "red_flags",
@@ -223,6 +227,9 @@ def _reasoning_prompt(
     phase3_context: str,
     patient_answers: list[PatientAnswer],
 ) -> str:
+    # The prompt carries both deterministic policy context and grounded support
+    # snippets. The model is allowed to reason within that frame, but it is not
+    # allowed to invent extra schema fields or bypass the backend safety rails.
     vitals_context = (
         f"Vital assessment: {vital_assessment.reasoning} Severity hint: {vital_assessment.severity_hint}."
         if vital_assessment
@@ -279,6 +286,8 @@ Return JSON only with the fields listed in the instruction block.
 
 
 def _fallback_clinical_assessment(*, reasoning_outcome, ai_error: str | None = None) -> ClinicalAssessment:
+    """Return the policy-backed fallback when the ADK path is unavailable."""
+
     return reasoning_outcome.to_clinical_assessment().model_copy(
         update={
             "reasoning_summary": (
@@ -304,6 +313,8 @@ def _build_reasoning_agent():
 
 
 async def _run_agent_prompt(prompt: str) -> str:
+    # Each ADK call runs inside a short-lived in-memory session because we only
+    # need a single structured response, not a persistent multi-turn ADK thread.
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types

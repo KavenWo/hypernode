@@ -8,7 +8,6 @@ uses Vertex AI Search for grounded execution guidance and returns the shared
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -110,6 +109,9 @@ def _execution_prompt(
     patient_profile: UserMedicalProfile,
     patient_answers: list[PatientAnswer],
 ) -> str:
+    # Execution receives an already-decided action plus context. This prompt
+    # reinforces that the agent's job is to turn that decision into grounded,
+    # responder-facing steps rather than re-running clinical reasoning.
     answers = "\n".join(
         f"- {answer.question_id}: {answer.answer}" for answer in patient_answers
     ) or "- No responder answers available."
@@ -156,6 +158,8 @@ def _extract_json_block(text: str) -> str:
 
 
 def _normalize_execution_guidance(guidance: ExecutionGuidance) -> ExecutionGuidance:
+    # Fill small gaps defensively so the runtime/UI always get a usable plan
+    # even when the model omits optional convenience fields.
     if not guidance.quick_replies:
         guidance.quick_replies = ["Done", "Need next step", "Condition worse"]
     if not guidance.primary_message:
@@ -206,6 +210,9 @@ def _direct_grounded_execution_guidance(
     mandatory, but the ADK tool wiring or Vertex resource name is broken.
     """
 
+    # This path keeps execution resilient when ADK tool wiring is unavailable.
+    # It reuses the same retrieval/policy helpers directly so mandatory protocol
+    # guidance can still be grounded instead of silently degrading.
     from agents.bystander.protocol_grounding import (
         build_protocol_guidance_summary,
         collect_required_protocol_intents,

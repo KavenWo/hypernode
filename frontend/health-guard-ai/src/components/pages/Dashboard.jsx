@@ -126,6 +126,9 @@ function buildTriageAnswers(messages, interaction) {
 }
 
 function buildIncidentContextPayload(messages, latestTurn) {
+  // Store the full backend-facing snapshot alongside the incident so the demo
+  // history can reconstruct both what the user saw and what the agents decided
+  // at that moment.
   return {
     conversation_history: messages || [],
     canonical_communication_state: latestTurn?.canonical_communication_state || null,
@@ -140,6 +143,9 @@ function buildIncidentContextPayload(messages, latestTurn) {
 }
 
 function deriveIncidentState(latestAssessment, latestTurn, action, messages) {
+  // The incident timeline is coarser than the live session state. This helper
+  // compresses the richer backend workflow into a few dashboard-friendly labels
+  // for history cards and status chips.
   const executionUpdates = latestTurn?.execution_updates || [];
   const dispatchCompleted = executionUpdates.some(
     (item) => item.type === "emergency_dispatch" && item.status === "completed",
@@ -164,6 +170,9 @@ function deriveIncidentState(latestAssessment, latestTurn, action, messages) {
 }
 
 function deriveLiveAssistantMessage(turn) {
+  // The backend can update the canonical prompt before a new assistant
+  // transcript message is appended. Prefer that prompt so the live UI reflects
+  // the latest execution/dispatch state immediately.
   const canonicalPrompt = turn?.canonical_communication_state?.latest_prompt;
   const executionState = turn?.execution_state;
   const actionStates = turn?.action_states || [];
@@ -393,6 +402,8 @@ export default function Dashboard({
   }, []);
 
   function stopSessionSync() {
+    // Session updates can arrive from either SSE or polling fallback. Always
+    // clear both channels together so we never leave duplicate listeners behind.
     if (streamRef.current) {
       streamRef.current.close();
       streamRef.current = null;
@@ -419,6 +430,9 @@ export default function Dashboard({
   }
 
   function applySessionState(payload) {
+    // Streaming payloads can arrive slightly out of order. Keep the longest
+    // transcript we have seen so an older snapshot does not erase a newer local
+    // message list.
     setMessages((currentMessages) => {
       const newHistory = payload.conversation_history || [];
       if (newHistory.length < currentMessages.length) {
@@ -506,6 +520,8 @@ export default function Dashboard({
       if (pollingRef.current) {
         return;
       }
+      // Polling is only a resilience fallback when the SSE stream drops. That
+      // keeps the demo responsive even if the browser loses the event stream.
       setStreamStatus("polling");
       pollingRef.current = window.setInterval(() => {
         void fetchSessionState();
@@ -585,6 +601,9 @@ export default function Dashboard({
     let cancelled = false;
 
     async function syncIncident() {
+      // The incident record is the durable audit trail for the hackathon demo.
+      // We sync the distilled triage outcome plus the richer backend context so
+      // the history page can show both user-facing status and agent state.
       try {
         await submitIncidentAnswers(incidentId, {
           triage_answers: triageAnswers,
@@ -701,6 +720,9 @@ export default function Dashboard({
   }
 
   async function startSession() {
+    // Starting a session may begin from a demo video analysis or a manual
+    // simulation trigger, but both paths converge into the same backend
+    // session-start contract and incident record shape.
     resetConversationState();
     abortActiveRequest();
     const controller = new AbortController();
@@ -733,6 +755,9 @@ export default function Dashboard({
         videoAnalysis = analysisPayload;
         setLatestVideoAnalysis(analysisPayload);
         if (!analysisPayload.fall_detected) {
+          // A "no fall" result still becomes a resolved incident so the demo
+          // shows the system handling false positives instead of silently doing
+          // nothing.
           if (sessionUid) {
             const incident = await createIncident({
               sessionUid,
@@ -878,7 +903,8 @@ export default function Dashboard({
     };
     const nextHistory = [...messages, userMessage];
 
-    // Optimistically show user message
+    // Show the responder message immediately so the conversation feels live
+    // while the backend performs communication analysis and reasoning refresh.
     setMessages(nextHistory);
 
     const bloodPressure = parseBloodPressure(vitals.bp);
@@ -923,9 +949,10 @@ export default function Dashboard({
       setLatestTurn(payload);
       setLatestAssessment(payload.assessment || latestAssessment);
 
-      // Update messages with the real response from the backend
+      // Replace the optimistic local-only turn with the authoritative backend
+      // append so transcript order stays aligned with the canonical session.
       const serverAppended = payload.transcript_append || [];
-      setMessages((current) => {
+      setMessages(() => {
         // Find if userMessage is already in current (it should be)
         // Then append what server said.
         // We use a functional update to be safe.
@@ -947,6 +974,9 @@ export default function Dashboard({
   }
 
   async function controlAction(actionType, decision) {
+    // Action controls are thin wrappers around the backend's canonical action
+    // state machine. The dashboard updates immediately from the response so the
+    // UI stays consistent even before the next stream event arrives.
     const activeSessionId =
       latestTurn?.session_id ||
       sessionIdRef.current ||
@@ -1044,7 +1074,7 @@ export default function Dashboard({
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      <DashboardHeader runtimeStatus={runtimeStatus} authSession={authSession} />
+      <DashboardHeader authSession={authSession} />
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 

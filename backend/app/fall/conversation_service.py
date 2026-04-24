@@ -10,7 +10,6 @@ from typing import Optional
 from fastapi import BackgroundTasks
 
 from app.fall.action_runtime_service import (
-    apply_session_action_decision,
     request_contact_family_action,
     request_emergency_dispatch_confirmation,
     reset_action_runtime_session,
@@ -189,6 +188,10 @@ def _execution_override_payload(
 ) -> dict[str, object] | None:
     """Return the next narrow execution-owned communication override."""
 
+    # Execution overrides are intentionally narrow. They only cover moments
+    # where the runtime must speak with authoritative wording, such as dispatch
+    # status or grounded protocol steps, and otherwise the communication agent
+    # keeps control of the reply style.
     target_key = communication_target if communication_target in {"patient", "bystander"} else "general"
 
     for update in execution_updates:
@@ -474,6 +477,10 @@ def _summarize_execution_guidance(guidance: ExecutionGuidance) -> str:
 def _store_execution_guidance_state(*, session_id: str, session, guidance: ExecutionGuidance) -> None:
     """Project execution-agent guidance into canonical execution state."""
 
+    # The execution agent can publish better grounded steps after the initial
+    # reasoning turn. We mirror that into canonical state so streaming updates
+    # and later turns surface the same protocol progression without rebuilding
+    # the guidance from scratch.
     previous_execution = session.execution_state or ExecutionState()
     guidance_protocol = guidance.protocol_key or previous_execution.guidance_protocol
     next_prompt = guidance.primary_message or (
@@ -714,6 +721,9 @@ def _current_guidance_steps_for_response(session, analysis: CommunicationAgentAn
 def _advance_execution_guidance_if_needed(*, session_id: str, session, analysis: CommunicationAgentAnalysis, latest_message: str) -> None:
     """Advance or repair the execution step pointer based on the AI's controlled signal."""
 
+    # The communication agent never edits protocol steps directly. It emits a
+    # constrained signal, and this function translates that signal into a safe
+    # step-index update against the already-grounded execution guidance.
     if not _has_active_execution_guidance(session):
         return
 
@@ -856,6 +866,9 @@ def _apply_execution_guidance_prompt(*, session, analysis: CommunicationAgentAna
 def _schedule_session_reasoning_refresh(session_id: str) -> None:
     """Ensure each session has at most one active background reasoning task."""
 
+    # Background reasoning is allowed to lag behind the immediate conversation
+    # turn, but we never want multiple refresh tasks racing to overwrite the
+    # same session snapshot.
     existing_task = _reasoning_tasks.get(session_id)
     if existing_task is not None and not existing_task.done():
         return
@@ -1038,6 +1051,10 @@ def _next_canonical_state_from_analysis(
     previous_state: CommunicationState | None = None,
 ) -> tuple[SessionState, str, dict[str, object]]:
     """Pick the next canonical state from the latest analyzed responder turn."""
+
+    # This is the deterministic state-machine bridge between free-form language
+    # and the dashboard/backend workflow. The communication model extracts facts,
+    # but this function decides which canonical session phase those facts imply.
 
     if current_state in {
         SessionState.REASONING_IN_PROGRESS,

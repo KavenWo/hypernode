@@ -1,4 +1,4 @@
-export default function DashboardHeader({ runtimeStatus, authSession }) {
+export default function DashboardHeader({ authSession }) {
   const sessionUid = authSession?.backendSession?.session_uid || authSession?.firebaseUser?.uid || "";
   const shortUid = sessionUid ? `${sessionUid.slice(0, 8)}...` : "None";
 

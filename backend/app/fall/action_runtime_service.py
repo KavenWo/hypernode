@@ -224,6 +224,10 @@ def _remaining_countdown_seconds(deadline: datetime | None, *, now: datetime | N
 def _sync_canonical_execution_snapshot(session_id: str, *, session) -> None:
     """Mirror deterministic action-state facts into the canonical execution state."""
 
+    # The UI reads a compact canonical execution snapshot, while the runtime
+    # stores richer per-action records. This projection keeps those two views in
+    # lockstep so conversation, dashboard cards, and persisted incident history
+    # all agree on the current dispatch/family state.
     previous_execution = session.execution_state or ExecutionState()
     action_map = {
         item.action_type: item
@@ -386,6 +390,12 @@ def request_emergency_dispatch_confirmation(
     reason: str,
     detail: str,
 ) -> ActionStateSummary | None:
+    """Open the frontend-visible dispatch countdown without executing yet.
+
+    This function is the safe boundary between reasoning saying "dispatch may be
+    needed" and the execution layer actually calling emergency services.
+    """
+
     session = fall_session_store.get_session(session_id)
     if session is None:
         return None
@@ -455,6 +465,8 @@ def request_contact_family_action(
     detail: str,
     message_text: str,
 ) -> ActionStateSummary | None:
+    """Persist a completed family-support notification into canonical state."""
+
     session = fall_session_store.get_session(session_id)
     if session is None:
         return None
@@ -499,6 +511,13 @@ def request_contact_family_action(
 
 
 async def _execute_dispatch_action(session_id: str, *, confirmation_status: str) -> ActionStateSummary | None:
+    """Execute the dispatch after confirmation or countdown expiry.
+
+    The same code path handles both manual confirmation and automatic timeout so
+    the downstream incident record, action state, and execution updates remain
+    identical regardless of how dispatch was approved.
+    """
+
     session = fall_session_store.get_session(session_id)
     if session is None:
         return None
@@ -670,6 +689,14 @@ def sync_action_state_with_assessment(
     assessment: FallAssessment,
     patient_answers: list[PatientAnswer],
 ) -> tuple[list[ActionStateSummary], list[ExecutionUpdate]]:
+    """Project the latest reasoning snapshot into deterministic action states.
+
+    This is intentionally the only place where assessment recommendations become
+    monitor/family/dispatch runtime state. Keeping that projection centralized
+    avoids subtle drift between the reasoning output, the canonical session
+    state, and the incident actions shown in the dashboard.
+    """
+
     session = fall_session_store.get_session(session_id)
     if session is None:
         return [_default_action_state(action_type) for action_type in MAIN_ACTION_ORDER], []
@@ -679,6 +706,9 @@ def sync_action_state_with_assessment(
     execution_updates = [item.model_copy(deep=True) for item in session.execution_updates]
     now = datetime.utcnow()
 
+    # Monitoring is always kept active while the session is unresolved, even if
+    # a more serious action is also present. That gives the UI a stable baseline
+    # action and preserves the "watch for worsening" execution update.
     state_map["monitor"] = state_map["monitor"].model_copy(
         update={
             "desired": True,
@@ -711,6 +741,10 @@ def sync_action_state_with_assessment(
             )
         )
 
+    # Family support is idempotent across refreshes. We only increment the
+    # visible notification count when the rendered family message meaningfully
+    # changes, which prevents every background reasoning refresh from looking
+    # like a brand-new outbound alert.
     family_action = next(
         (item for item in assessment.response_plan.notification_actions if item.type == "inform_family"),
         None,
@@ -780,6 +814,9 @@ def sync_action_state_with_assessment(
         if preserved_status != "completed":
             execution_updates = [item for item in execution_updates if item.type != "inform_family"]
 
+    # Dispatch is the only action with a pending-confirmation phase. Once it is
+    # completed or cancelled, later refreshes preserve that terminal state
+    # instead of reopening a new countdown.
     escalation = assessment.response_plan.escalation_action
     dispatch_requested = escalation.type in {"dispatch_pending_confirmation", "emergency_dispatch"}
     dispatch_state = state_map["emergency_dispatch"]
@@ -909,6 +946,8 @@ async def apply_session_action_decision(
     action_type: str,
     decision: str,
 ) -> SessionActionResponse | None:
+    """Apply the responder's action decision and return the refreshed session view."""
+
     session = fall_session_store.get_session(session_id)
     if session is None:
         logger.info("[Session %s] Not found in memory | looking up incident by realtime ID", session_id)

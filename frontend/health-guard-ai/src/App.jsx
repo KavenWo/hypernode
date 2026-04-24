@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Sidebar from "./components/layout/Sidebar";
 import Dashboard from "./components/pages/Dashboard";
 import ProfilePage from "./components/pages/ProfilePage";
@@ -22,11 +22,6 @@ export default function App() {
   const sessionRestoreStartedRef = useRef(false);
   const currentPatientId = patientProfiles[0]?.patientId || "";
 
-  const currentPatient = useMemo(
-    () => patientProfiles[0] || null,
-    [patientProfiles],
-  );
-
   useEffect(() => {
     let cancelled = false;
 
@@ -38,6 +33,9 @@ export default function App() {
     sessionRestoreStartedRef.current = true;
 
     async function hydrateExistingSession() {
+      // On reload we first try to recover the anonymous Firebase-backed session
+      // so the user can resume the same patient workspace and incident history
+      // without going through the welcome modal again.
       try {
         const session = await resolveExistingAnonymousSession();
         if (cancelled) {
@@ -71,6 +69,9 @@ export default function App() {
   }, []);
 
   async function handleWelcomeContinue() {
+    // The welcome flow intentionally moves the UI to "ready" as soon as a
+    // session exists, then lets slower patient/history hydration finish in the
+    // background so the demo feels immediate.
     setAuthStatus("signing_in");
     setAuthError("");
     setDataStatus("loading");
@@ -100,6 +101,9 @@ export default function App() {
     let isMounted = true;
 
     async function hydrateSessionData() {
+      // Session hydration fetches the durable patient list and incident history
+      // after auth succeeds. The dashboard itself stays mounted so its local
+      // simulation state is not lost when switching pages.
       const sessionUid = authSession?.backendSession?.session_uid;
       if (!sessionUid) return;
 
@@ -150,7 +154,8 @@ export default function App() {
               </div>
             </div>
           )}
-          {/* Dashboard is persisted to maintain its state and running processes */}
+          {/* Keep the dashboard mounted between page switches so active session
+              sync, local timers, and demo state are not torn down. */}
           <div style={{ display: page === PAGES.DASHBOARD ? "contents" : "none" }}>
             <Dashboard
               isActive={page === PAGES.DASHBOARD}
